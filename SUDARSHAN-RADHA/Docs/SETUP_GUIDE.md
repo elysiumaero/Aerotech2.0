@@ -46,6 +46,18 @@ Complete first-time setup from nothing to first hover.
 
 ## Part 2 — Flash ESP32
 
+### 2a — Set WiFi Credentials
+
+The credentials are stored in a file excluded from version control:
+
+1. Navigate to `ESP32/SUDARSHAN_Bridge/ATLAS_ESP32_Bridge_v2.ino/`
+2. Copy `credentials.h.example` to `credentials.h`
+3. Edit `credentials.h` and set your desired `WIFI_SSID` and `WIFI_PASS`
+
+> **Important:** Never commit `credentials.h` to git — it is in `.gitignore`.
+
+### 2b — Compile and Flash
+
 1. Open `ESP32/SUDARSHAN_Bridge/SUDARSHAN_Bridge.ino`
 2. Tools → Board → ESP32 Dev Module
 3. Tools → Port → select your ESP32 COM port

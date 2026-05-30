@@ -1,0 +1,45 @@
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# ── GCS flight logs (local only — keep the directory, ignore logs) ───────────
+SUDARSHAN-RADHA/GCS/logs/*.log
+SUDARSHAN-RADHA/GCS/logs/*.csv
+
+# ── WiFi credentials (never commit) ──────────────────────────
+credentials.h
+
+# ── Arduino build artifacts ───────────────────────────────────
+build/
+*.elf
+*.hex
+*.bin
+*.map
+*.d
+
+# ── Arduino IDE cache ─────────────────────────────────────────
+.arduino15/
+libraries/
+
+# ── OS junk ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ── IDE files ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Zip archives (re-generate from source) ────────────────────
+*.zip

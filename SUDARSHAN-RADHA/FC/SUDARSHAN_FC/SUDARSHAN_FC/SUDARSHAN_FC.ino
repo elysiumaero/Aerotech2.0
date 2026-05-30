@@ -51,13 +51,17 @@
 #define ESC_IDLE  1150    // ← tune this: throttle at which drone just lifts
 #define ESC_MAX   1950
 
+// Battery thresholds (mV) — 3S LiPo
+#define BAT_WARN_MV  10500   // alert: land soon
+#define BAT_CRIT_MV   9900   // auto-LAND triggered immediately
+
 // Loop timing
 #define LOOP_HZ       250
 #define LOOP_US       (1000000UL / LOOP_HZ)   // 4000µs
 #define TELEM_EVERY   25                       // every 25 loops = 10Hz
 
 // DMS: if no command for 30s → FAILSAFE
-#define DMS_MS  30000UL
+#define DMS_TIMEOUT_MS  30000UL
 
 // Complementary filter weight (0.98 = trust gyro heavily)
 #define CF_ALPHA  0.98f
@@ -143,9 +147,14 @@ float pitch_cf     = 0;
 float yaw_gyro     = 0;
 
 // Altitude
-float alt_cm       = 0;
-float target_alt   = 0;
-uint8_t landCount  = 0;           // debounce for landing detect
+float alt_cm          = 0;
+float target_alt      = 0;
+uint8_t landCount     = 0;           // debounce for landing detect
+unsigned long sonarValidMs = 0;      // last millis() sonar returned >0
+bool  sonarStale      = false;       // true when sonar has been 0 for >500ms
+
+// Battery (cached so we don't spam analogRead at 250Hz)
+int   bat_mv_cached   = 12600;
 
 // Setpoints
 float sp_roll      = 0;
@@ -256,7 +265,14 @@ float readSonar() {
   digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
   digitalWrite(PIN_TRIG, LOW);
   long d = pulseIn(PIN_ECHO, HIGH, 23000);  // 23ms → 4m max
-  return (d == 0) ? alt_cm : d * 0.01715f;
+  if (d > 0) {
+    sonarValidMs = millis();
+    sonarStale   = false;
+    return d * 0.01715f;
+  }
+  // Mark stale if no valid reading for >500ms (drone above 4m range)
+  if (millis() - sonarValidMs > 500) sonarStale = true;
+  return alt_cm;  // hold last known value
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -355,6 +371,7 @@ void handleCmd(const String& line) {
     if (mode == MODE_DISARMED || mode == MODE_KILL) {
       ack("HOVER", false, "not armed"); return;
     }
+    pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
     mode      = MODE_HOVER;
     sp_roll=0; sp_pitch=0; sp_yaw=yaw_gyro;
     target_alt = alt_cm;
@@ -367,6 +384,8 @@ void handleCmd(const String& line) {
     if (mode == MODE_DISARMED || mode == MODE_KILL) {
       ack("LAND", false, "not armed"); return;
     }
+    pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
+    sp_roll=0; sp_pitch=0;
     landTimer = millis(); landCount = 0;
     mode = MODE_LAND;
     ack("LAND", true);
@@ -403,6 +422,13 @@ void handleCmd(const String& line) {
     gps_baro_cm= doc["baro_cm"] | 0;
     gps_fix    = doc["fix"]     | 0;
     gps_sats   = doc["sats"]    | 0;
+    // Slow compass correction to cancel long-term gyro yaw drift
+    if (gps_fix) {
+      float diff = gps_hdg - yaw_gyro;
+      while (diff >  180) diff -= 360;
+      while (diff < -180) diff += 360;
+      yaw_gyro += 0.005f * diff;  // very slow weight — won't disturb yaw PID
+    }
     return;
   }
 
@@ -492,14 +518,16 @@ void updateMission() {
 //  TELEMETRY  (10 Hz)
 // ─────────────────────────────────────────────────────────────
 void sendTelemetry() {
-  StaticJsonDocument<192> d;
+  bat_mv_cached = (int)(analogRead(PIN_BATT) * BATT_SCALE);
+  StaticJsonDocument<256> d;
   d["roll"]   = (int)(roll_cf  * 10) / 10.0;
   d["pitch"]  = (int)(pitch_cf * 10) / 10.0;
   d["yaw"]    = (int)(yaw_gyro * 10) / 10.0;
   d["alt_cm"] = (int)alt_cm;
-  d["bat_mv"] = (int)(analogRead(PIN_BATT) * BATT_SCALE);
+  d["bat_mv"] = bat_mv_cached;
   d["mode"]   = MODE_NAME[mode];
   d["armed"]  = (mode > MODE_DISARMED && mode != MODE_KILL) ? 1 : 0;
+  if (sonarStale) d["warn"] = "SONAR_STALE";
   String s; serializeJson(d, s);
   ESP_SERIAL.println(s);
 }
@@ -527,6 +555,25 @@ void controlLoop(float dt) {
       DBG_SERIAL.println("[DMS ] TIMEOUT → FAILSAFE");
       mode = MODE_FAILSAFE;
     }
+  }
+
+  // ── Battery critical auto-LAND (checked at telemetry rate via bat_mv_cached) ──
+  if (mode > MODE_DISARMED && mode != MODE_KILL &&
+      mode != MODE_LAND    && mode != MODE_FAILSAFE) {
+    if (bat_mv_cached > 0 && bat_mv_cached < BAT_CRIT_MV) {
+      DBG_SERIAL.printf("[BAT ] CRITICAL %.0fmV → auto LAND\n", (float)bat_mv_cached);
+      pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
+      sp_roll=0; sp_pitch=0;
+      landTimer = millis(); landCount = 0;
+      mode = MODE_LAND;
+    }
+  }
+
+  // ── Sonar stale warning ────────────────────────────────────
+  if (sonarStale && mode == MODE_HOVER) {
+    // Disable altitude hold — sonar out of range; maintain last throttle
+    // (pidAlt will still run but with stale data; operator must take over)
+    DBG_SERIAL.println("[SONAR] STALE — altitude hold unreliable");
   }
 
   // ── Mode logic ────────────────────────────────────────────
@@ -568,8 +615,10 @@ void controlLoop(float dt) {
     }
 
     case MODE_RTL:
-      // Simplified RTL: just land for now
-      // Full GPS position hold will be added in v2
+      // GPS RTL not implemented — notify GCS and fall back to LAND
+      ack("RTL", false, "GPS RTL not implemented — initiating LAND");
+      pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
+      sp_roll=0; sp_pitch=0;
       landTimer = millis(); landCount = 0;
       mode = MODE_LAND;
       break;

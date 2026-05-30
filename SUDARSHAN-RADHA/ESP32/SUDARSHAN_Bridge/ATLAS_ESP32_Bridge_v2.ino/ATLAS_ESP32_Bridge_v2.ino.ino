@@ -59,12 +59,11 @@
 
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include "credentials.h"   // defines WIFI_SSID and WIFI_PASS (not in git)
 
 // ─────────────────────────────────────────────────────────────
-//  CONFIG  (edit here only)
+//  CONFIG  (edit credentials.h for WiFi SSID/password)
 // ─────────────────────────────────────────────────────────────
-#define WIFI_SSID      "SUDARSHAN_AP"
-#define WIFI_PASS      "radha2026"
 
 #define PORT_GCS       5760
 #define PORT_PHONE     5762
@@ -106,10 +105,11 @@ struct {
   bool   fresh   = false;
 } gps;
 
-unsigned long lastPing   = 0;
-unsigned long lastGpsFwd = 0;
-bool          dmsArmed   = false;   // true once GCS connects
-bool          dmsFired   = false;
+unsigned long lastPing       = 0;
+unsigned long lastGpsFwd     = 0;
+bool          dmsArmed       = false;   // true once GCS connects
+bool          dmsFired       = false;
+bool          phoneWasConn   = false;   // tracks previous phone connection state
 
 // ─────────────────────────────────────────────────────────────
 //  SETUP
@@ -180,8 +180,15 @@ void acceptClients() {
     }
   }
 
-  // Phone client — only one at a time
-  if (!phoneClient || !phoneClient.connected()) {
+  // Phone client — only one at a time; detect disconnection and notify GCS
+  bool phoneNowConn = (phoneClient && phoneClient.connected());
+  if (phoneWasConn && !phoneNowConn) {
+    sendToGCS("{\"info\":\"PHONE_DISCONNECTED\"}");
+    Serial.println("[PHONE] Disconnected");
+  }
+  phoneWasConn = phoneNowConn;
+
+  if (!phoneNowConn) {
     WiFiClient c = phoneServer.available();
     if (c) {
       if (phoneClient) phoneClient.stop();
