@@ -1,0 +1,66 @@
+Based on your **SUDARSHAN_FC.ino**, these are the Arduino libraries required: 
+
+### Arduino Mega 2560 Libraries
+
+```cpp
+#include <Wire.h>
+#include <Servo.h>
+#include <ArduinoJson.h>
+```
+
+### Installation
+
+#### 1. Wire Library
+
+* Included with Arduino IDE.
+* No installation required.
+
+#### 2. Servo Library
+
+* Included with Arduino IDE.
+* If missing:
+
+  * Arduino IDE → Library Manager
+  * Search: **Servo**
+  * Install **Servo by Arduino**
+
+#### 3. ArduinoJson v6
+
+* Arduino IDE → Library Manager
+* Search: **ArduinoJson**
+* Install **ArduinoJson by Benoit Blanchon**
+* Recommended: Version 6.x
+
+### If Using MPU6050
+
+Your code mentions an MPU6050 in the wiring comments. If later sections of the code contain:
+
+```cpp
+#include <MPU6050.h>
+```
+
+or
+
+```cpp
+#include <Adafruit_MPU6050.h>
+```
+
+then you'll also need:
+
+* **Adafruit MPU6050**
+* **Adafruit Unified Sensor**
+
+or
+
+* **MPU6050 by Electronic Cats**
+
+depending on which library is actually used.
+
+### Current Required List
+
+```
+Wire (Built-in)
+Servo (Built-in)
+ArduinoJson v6
+```
+

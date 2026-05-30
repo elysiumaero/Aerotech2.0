@@ -1,0 +1,48 @@
+For the ESP32 bridge firmware you uploaded, the required Arduino libraries are: 
+
+### Required Libraries
+
+1. **ArduinoJson v6**
+
+   * Install from Arduino Library Manager.
+   * Search: **ArduinoJson**
+   * Author: Benoit Blanchon
+
+2. **WiFi.h**
+
+   * Comes with the **ESP32 Board Package**.
+   * You do **not** install this separately.
+   * If you get:
+
+     ```cpp
+     fatal error: WiFi.h: No such file or directory
+     ```
+
+     then the ESP32 board package is not installed or the wrong board is selected.
+
+### Install ESP32 Board Package
+
+In Arduino IDE:
+
+1. **File → Preferences**
+2. Add this URL to *Additional Boards Manager URLs*:
+
+   ```text
+   https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+   ```
+3. **Tools → Board → Boards Manager**
+4. Search **ESP32**
+5. Install **esp32 by Espressif Systems**
+6. Select your board:
+
+   * ESP32 Dev Module
+   * DOIT ESP32 DEVKIT V1
+   * ESP32-WROOM-32
+     (whichever matches your hardware)
+
+### Libraries Used in Your Code
+
+```cpp
+#include <WiFi.h>
+#include <ArduinoJson.h>
+```
