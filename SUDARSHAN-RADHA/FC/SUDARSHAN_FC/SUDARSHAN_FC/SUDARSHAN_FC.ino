@@ -432,6 +432,29 @@ void handleCmd(const String& line) {
     return;
   }
 
+  // ── MOTOR_TEST  {"cmd":"MOTOR_TEST","motor":"FL","throttle":1100,"duration_ms":1500}
+  // Only accepted in DISARMED state — for bench testing with props OFF.
+  if (!strcmp(cmd, "MOTOR_TEST")) {
+    if (mode != MODE_DISARMED) { ack("MOTOR_TEST", false, "must be DISARMED"); return; }
+    const char* motor = doc["motor"] | "FL";
+    int  thr = constrain(doc["throttle"]    | 1100, ESC_MIN, 1200);  // hard cap 1200µs
+    unsigned long dur = constrain((unsigned long)(doc["duration_ms"] | 1000),
+                                  200UL, 2000UL);
+    // Arm all ESCs to minimum first
+    escsKill();
+    delay(500);
+    // Spin only the requested motor
+    if      (!strcmp(motor, "FL")) escFL.writeMicroseconds(thr);
+    else if (!strcmp(motor, "FR")) escFR.writeMicroseconds(thr);
+    else if (!strcmp(motor, "RL")) escRL.writeMicroseconds(thr);
+    else if (!strcmp(motor, "RR")) escRR.writeMicroseconds(thr);
+    else { ack("MOTOR_TEST", false, "bad motor"); return; }
+    delay(dur);        // blocking OK — drone is DISARMED on bench
+    escsKill();
+    ack("MOTOR_TEST", true, motor);
+    return;
+  }
+
   // ── PRESET ────────────────────────────────────────────────
   if (!strcmp(cmd, "PRESET")) {
     if (mode == MODE_DISARMED || mode == MODE_KILL) {
