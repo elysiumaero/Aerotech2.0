@@ -104,7 +104,7 @@ TELEMETRY LIVE CHECK:
 
 ```
 [ ] Phone connected to SUDARSHAN_AP WiFi
-[ ] Share GPS / GPS app sending to 192.168.4.1:5762
+[ ] GPS Server by Metrologic → TCP Client → 192.168.4.1:5762 → NMEA → streaming
 [ ] GCS GPS panel shows:
     [ ] LAT: __________ (not 0.000000)
     [ ] LON: __________ (not 0.000000)

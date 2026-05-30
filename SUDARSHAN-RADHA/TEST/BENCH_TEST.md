@@ -3,16 +3,22 @@
 > **Props OFF for this entire document.**  
 > Complete every section in order. Do not skip ahead.  
 > Mark each item ✅ before moving to the next section.
+>
+> **New in v1.2:** After completing this document, run
+> `TEST/V1.2_FEATURE_TEST.md` to validate Login, Inauguration,
+> Hardware Preflight, AES Encryption, and GPS Server NMEA.
 
 ---
 
 ## What You Need
-- Laptop with RADHA GCS running
+- Laptop with RADHA GCS running (`python SUDARSHAN-RADHA/GCS/radha_gcs.py`)
 - Arduino IDE Serial Monitor (for Mega debug)
 - Multimeter
-- Android phone with Share GPS app
+- Android phone with **GPS Server by Metrologic** app (port 5762, TCP Client mode)
 - 3S LiPo battery (charged)
 - USB cables for Mega and ESP32 (testing phase)
+- `GCS/credentials.py` created from `credentials.py.example`
+- `credentials.h` created from `credentials.h.example` (ESP32 must be reflashed)
 
 ---
 
@@ -226,22 +232,28 @@ OVERRIDE:
 
 ---
 
-## Section 9 — Phone GPS Test
+## Section 9 — Phone GPS Test (GPS Server by Metrologic)
 
 ```
 [ ] Connect phone to SUDARSHAN_AP WiFi (password: radha2026)
-[ ] Open Share GPS app → TCP Client → 192.168.4.1:5762 → Start
-[ ] ESP32 Serial Monitor: [PHONE] Connected from 192.168.4.3
+[ ] Open GPS Server by Metrologic app:
+        Mode   → TCP Client
+        Host   → 192.168.4.1
+        Port   → 5762
+        Output → NMEA
+[ ] Start GPS Server streaming
+[ ] ESP32 Serial Monitor: [PHONE] Connected from 192.168.4.X
+[ ] ESP32 parses NMEA: [GPS ] GGA  fix=X  sats=X  lat=XX.XXXXXX  lon=XX.XXXXXX
 [ ] GCS GPS panel updates:
     [ ] FIX shows 3D FIX (green) or NO FIX (red)
     [ ] SATS shows a number
     [ ] LAT / LON show decimal degree values
-    [ ] HEADING shows degrees
+    [ ] HEADING shows degrees (from $GPRMC/$GNRMC)
 [ ] Mega Serial Monitor shows GPS packets appearing:
     [CMD] GPS  lat=XX.XXXXXX  lon=XX.XXXXXX  fix=X  sats=X
 [ ] Walk phone around room → lat/lon values change slowly ✓
-[ ] Disconnect phone → GCS GPS panel freezes (last values held) ✓
-[ ] ESP32 Serial Monitor: [PHONE] Connected... lost (no explicit disconnect msg)
+[ ] Stop GPS Server app → GCS log: ESP32: PHONE_DISCONNECTED (amber) ✓
+[ ] GCS GPS panel freezes on last known values ✓
 ```
 
 ---
@@ -273,9 +285,9 @@ OVERRIDE:
 Tester name : ________________________________
 Date        : ________________________________
 Firmware versions:
-    ESP32 Bridge : SUDARSHAN_Bridge v1.0
-    Mega FC      : SUDARSHAN_FC     v1.0
-    RADHA GCS    : RADHA GCS        v1.0
+    ESP32 Bridge : ATLAS_ESP32_Bridge_v2   (v2.0 — AES + NMEA)
+    Mega FC      : SUDARSHAN_FC            (v1.1 — MOTOR_TEST cmd)
+    RADHA GCS    : radha_gcs.py            (v1.2 — Login, Preflight, Inauguration)
 
 All sections passed:  YES / NO
 Notes:

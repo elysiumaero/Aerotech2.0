@@ -73,7 +73,7 @@ class TestTelemRouting(unittest.TestCase):
         app = self._make_app()
         app._on_telem({"info": "PHONE_DISCONNECTED"})
         import radha_gcs as gcs
-        app._log.assert_called_with("ESP32: PHONE DISCONNECTED", gcs.WARN)
+        app._log.assert_called_with("ESP32: PHONE_DISCONNECTED", gcs.WARN)
 
     def test_dms_fired_packet_logs_danger(self):
         app = self._make_app()

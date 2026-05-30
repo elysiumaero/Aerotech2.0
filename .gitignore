@@ -15,8 +15,10 @@ venv/
 SUDARSHAN-RADHA/GCS/logs/*.log
 SUDARSHAN-RADHA/GCS/logs/*.csv
 
-# ── WiFi credentials (never commit) ──────────────────────────
+# ── WiFi / AES / auth credentials (never commit) ─────────────
 credentials.h
+SUDARSHAN-RADHA/GCS/credentials.py
+SUDARSHAN-RADHA/GCS/auth.json
 
 # ── Arduino build artifacts ───────────────────────────────────
 build/
