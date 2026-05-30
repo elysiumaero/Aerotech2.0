@@ -159,14 +159,19 @@ String decryptLine(const String& b64str) {
 //  NMEA PARSING  (GPS Server by Metrologic, client mode)
 // ─────────────────────────────────────────────────────────────
 
-// Validate NMEA checksum — XOR of chars between '$' and '*'
+// Validate NMEA checksum — XOR of chars between '$' and '*'.
+// Returns true if checksum matches OR if no '*' is present (some apps omit it).
 bool nmeaChecksum(const String& s) {
   int star = s.indexOf('*');
-  if (star < 2 || star + 2 > (int)s.length()) return false;
+  if (star < 2) return true;                       // no checksum — accept
+  if (star + 2 > (int)s.length()) return true;    // truncated — accept
   uint8_t calc = 0;
   for (int i = 1; i < star; i++) calc ^= (uint8_t)s[i];
   char hex[3] = {s[star+1], s[star+2], 0};
-  return calc == (uint8_t)strtol(hex, nullptr, 16);
+  bool ok = (calc == (uint8_t)strtol(hex, nullptr, 16));
+  if (!ok) Serial.printf("[NMEA ] Checksum FAIL: calc=%02X sent=%s  %.40s\n",
+                          calc, hex, s.c_str());
+  return ok;
 }
 
 // Return Nth comma-delimited field (0-indexed)
@@ -286,7 +291,7 @@ void setup() {
 
   gcsServer.begin();
   phoneServer.begin();
-  Serial.printf("[TCP  ] GCS:%d  Phone:%d (NMEA GPS Server)\n",
+  Serial.printf("[TCP  ] GCS:%d  Phone:%d (NMEA — GPS Server by Metrologic, TCP CLIENT mode)\n",
                 PORT_GCS, PORT_PHONE);
 
   for (int i = 0; i < 3; i++) {
@@ -429,18 +434,26 @@ void onGCSLine(const String& line) {
 //  PHONE LINE HANDLER  (NMEA sentences)
 // ─────────────────────────────────────────────────────────────
 void onPhoneLine(const String& line) {
-  // Accept $GPGGA / $GNGGA — fix data
-  if (line.startsWith("$GPGGA") || line.startsWith("$GNGGA")) {
+  // NMEA sentence type is characters 3–5 (after the 2-char talker ID).
+  // e.g. $GP GGA, $GN GGA, $GL GGA, $GA GGA, $GB GGA → all are "GGA"
+  // This approach accepts all talker IDs (GP=GPS, GN=multi, GL=GLONASS,
+  // GA=Galileo, GB=BeiDou) without listing every combination explicitly.
+  if (line.length() < 6 || line[0] != '$') return;
+  String stype = line.substring(3, 6);   // "GGA", "RMC", "GSA", etc.
+
+  if (stype == "GGA") {
     parseGGA(line);
-  }
-  // Accept $GPRMC / $GNRMC — heading and validity
-  else if (line.startsWith("$GPRMC") || line.startsWith("$GNRMC")) {
+  } else if (stype == "RMC") {
     parseRMC(line);
   }
-  // Ignore all other NMEA sentences silently
+  // All other sentence types silently ignored.
 
-  // When we have fresh data, mirror to GCS for display
+  // When we have fresh data, mirror to GCS for display.
+  // Reset gps.fresh immediately after forwarding so that if multiple
+  // sentences arrive in the same readPhone() burst we don't send
+  // the same position to the GCS twice.
   if (gps.fresh) {
+    gps.fresh = false;
     StaticJsonDocument<256> fwd;
     fwd["type"]    = "phone";
     fwd["lat"]     = gps.lat;

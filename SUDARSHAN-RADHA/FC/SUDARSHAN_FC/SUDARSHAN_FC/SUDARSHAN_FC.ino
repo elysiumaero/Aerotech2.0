@@ -66,6 +66,11 @@
 // Complementary filter weight (0.98 = trust gyro heavily)
 #define CF_ALPHA  0.98f
 
+// IMU yaw sign — flip to -1 if yaw drifts the WRONG direction on bench.
+// With MPU6050 Z-axis pointing UP  → keep at  1.
+// With MPU6050 Z-axis pointing DOWN → change to -1.
+#define IMU_YAW_SIGN  1
+
 // PID output limits (µs added to throttle)
 #define LIM_RP   300.0f
 #define LIM_YAW  120.0f
@@ -252,7 +257,7 @@ void computeAngles(float dt) {
   float aPitch = atan2f(-accX, sqrtf(accY*accY + accZ*accZ)) * 57.2958f;
   roll_cf   = CF_ALPHA*(roll_cf  + gyrX*dt) + (1-CF_ALPHA)*aRoll;
   pitch_cf  = CF_ALPHA*(pitch_cf + gyrY*dt) + (1-CF_ALPHA)*aPitch;
-  yaw_gyro += gyrZ * dt;
+  yaw_gyro += (IMU_YAW_SIGN * gyrZ) * dt;
   if (yaw_gyro >  180) yaw_gyro -= 360;
   if (yaw_gyro < -180) yaw_gyro += 360;
 }
@@ -264,15 +269,20 @@ float readSonar() {
   digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(2);
   digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
   digitalWrite(PIN_TRIG, LOW);
-  long d = pulseIn(PIN_ECHO, HIGH, 23000);  // 23ms → 4m max
-  if (d > 0) {
+  // 23ms timeout → 4m max range.
+  // NOTE: called from the main loop at 25 Hz, NOT inside the 250Hz control
+  // loop, so this blocking call does NOT corrupt the dt calculation.
+  long d = pulseIn(PIN_ECHO, HIGH, 23000);
+  if (d > 150) {               // reject pulses < 150µs (< 2.6 cm — noise/crosstalk)
+    float raw    = d * 0.01715f;
     sonarValidMs = millis();
     sonarStale   = false;
-    return d * 0.01715f;
+    // EMA: blend 40% new reading into 60% running value — rejects single spikes
+    // while tracking real altitude changes within a few readings.
+    return alt_cm * 0.60f + raw * 0.40f;
   }
-  // Mark stale if no valid reading for >500ms (drone above 4m range)
   if (millis() - sonarValidMs > 500) sonarStale = true;
-  return alt_cm;  // hold last known value
+  return alt_cm;               // hold last valid value
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -564,13 +574,9 @@ void controlLoop(float dt) {
   mpuRead();
   computeAngles(dt);
 
-  // Sonar at ~25Hz (every 10th loop) — pulseIn is blocking so
-  // we limit calls to avoid impacting the 250Hz loop budget
-  static uint8_t sonarDiv = 0;
-  if (++sonarDiv >= 10) {
-    sonarDiv = 0;
-    alt_cm   = readSonar();
-  }
+  // Sonar is read in the main loop at 25 Hz — NOT here.
+  // pulseIn() is blocking (up to 23 ms) and would corrupt dt
+  // for the gyro integration if called inside this timed loop.
 
   // ── DMS ───────────────────────────────────────────────────
   if (mode > MODE_DISARMED && mode != MODE_KILL) {
@@ -714,7 +720,7 @@ void setup() {
   // PID init   ( Kp,   Ki,    Kd,   limit )
   pidRoll.init (1.8f, 0.05f, 0.80f, LIM_RP );
   pidPitch.init(1.8f, 0.05f, 0.80f, LIM_RP );
-  pidYaw.init  (3.0f, 0.02f, 0.50f, LIM_YAW);
+  pidYaw.init  (2.0f, 0.02f, 0.00f, LIM_YAW);  // Kd=0: yaw gyro noise would saturate derivative
   pidAlt.init  (3.0f, 0.10f, 1.50f, LIM_ALT);
   DBG_SERIAL.println("[PID ] initialized");
 
@@ -730,7 +736,11 @@ void loop() {
   unsigned long now = micros();
 
   if (now - lastLoopUs >= LOOP_US) {
-    float dt   = (now - lastLoopUs) / 1000000.0f;
+    float dt = (now - lastLoopUs) / 1000000.0f;
+    // Cap dt: if something outside this block (e.g. UART handling or a
+    // future blocking call) delays the loop, don't let a single huge dt
+    // spike the gyro integration.
+    if (dt > 0.010f) dt = 0.010f;
     lastLoopUs = now;
     loopCount++;
 
@@ -738,6 +748,14 @@ void loop() {
 
     if (loopCount % TELEM_EVERY == 0)
       sendTelemetry();
+  }
+
+  // Sonar at ~25 Hz — separate from the 250Hz control loop so that
+  // pulseIn's blocking time (up to 23ms) never corrupts dt above.
+  static unsigned long lastSonarMs = 0;
+  if (millis() - lastSonarMs >= 40) {
+    lastSonarMs = millis();
+    alt_cm = readSonar();
   }
 
   // UART reads happen between loop ticks (non-blocking)
