@@ -1,0 +1,20 @@
+[tool.black]
+line-length = 120
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.8"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.flake8]
+max-line-length = 120
+extend-ignore = ["E203", "W503"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 10

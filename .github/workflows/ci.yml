@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ── Python GCS lint ──────────────────────────────────────────
+  lint-gcs:
+    name: Lint GCS (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dev dependencies
+        run: |
+          pip install flake8 pylint pytest
+        working-directory: SUDARSHAN-RADHA/GCS
+
+      - name: Syntax check
+        run: python -m py_compile radha_gcs.py
+        working-directory: SUDARSHAN-RADHA/GCS
+
+      - name: Flake8 (errors only)
+        run: flake8 radha_gcs.py --select=E,F --max-line-length=120
+        working-directory: SUDARSHAN-RADHA/GCS
+
+      - name: Run unit tests
+        run: pytest tests/ -v
+        working-directory: SUDARSHAN-RADHA/GCS
+
+  # ── Arduino FC firmware compile ──────────────────────────────
+  compile-fc:
+    name: Compile FC Firmware (Mega2560)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Install AVR platform
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+
+      - name: Install ArduinoJson
+        run: arduino-cli lib install "ArduinoJson@6.21.5"
+
+      - name: Compile SUDARSHAN_FC
+        run: |
+          arduino-cli compile \
+            --fqbn arduino:avr:mega \
+            SUDARSHAN-RADHA/FC/SUDARSHAN_FC/SUDARSHAN_FC/SUDARSHAN_FC.ino
+
+  # ── Arduino ESP32 firmware compile ───────────────────────────
+  compile-esp32:
+    name: Compile ESP32 Bridge Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Install ESP32 platform
+        run: |
+          arduino-cli core update-index \
+            --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core install esp32:esp32 \
+            --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+
+      - name: Install ArduinoJson
+        run: arduino-cli lib install "ArduinoJson@6.21.5"
+
+      - name: Create credentials.h (CI placeholder)
+        run: |
+          cp "SUDARSHAN-RADHA/ESP32/SUDARSHAN_Bridge/ATLAS_ESP32_Bridge_v2.ino/credentials.h.example" \
+             "SUDARSHAN-RADHA/ESP32/SUDARSHAN_Bridge/ATLAS_ESP32_Bridge_v2.ino/credentials.h"
+
+      - name: Compile ESP32 Bridge
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            "SUDARSHAN-RADHA/ESP32/SUDARSHAN_Bridge/ATLAS_ESP32_Bridge_v2.ino/ATLAS_ESP32_Bridge_v2.ino.ino"
