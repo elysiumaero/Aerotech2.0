@@ -572,14 +572,17 @@ class PreflightRunner:
 
         # ── Connectivity ──────────────────────────────────────
         if tid == "connectivity":
+            # Record timestamp BEFORE sending PING so we only accept
+            # packets that arrive AFTER this point (prevents stale-cache
+            # false positives when reconnecting to a silent FC).
+            before_ts = self._telem_ts
             self._conn.send({"cmd": "PING"})
-            deadline = time.time() + 3.0
+            deadline = time.time() + 5.0
             while time.time() < deadline:
-                t = self._telem()
-                if t:
-                    return True, "Telemetry received"
+                if self._telem_ts > before_ts:
+                    return True, "Fresh FC telemetry received"
                 time.sleep(0.1)
-            return False, "No telemetry in 3s"
+            return False, "No FC telemetry in 5s — check ESP32↔Mega UART wiring"
 
         # ── Battery ───────────────────────────────────────────
         if tid == "battery":
@@ -673,6 +676,9 @@ class RADHAApp:
         self._bat_lbl            = None
         self._last_seq           = -1
         self._latest_telem       = None
+        self._telem_ts           = 0.0    # epoch of last REAL telemetry packet
+        self._conn_time          = 0.0    # epoch when last connection was established
+        self._no_telem_warned    = False  # one-shot "no FC data" warning fired
         self._latest_gps         = {}
         self._preflight_results  = {t[0]: "idle" for t in PREFLIGHT_TESTS}
         self._preflight_critical = False   # True when tests 1–4 all pass
@@ -1233,7 +1239,9 @@ class RADHAApp:
                                     f"⚠ TELEM GAP: missed {gap-1} packet(s)", WARN)
             if seq >= 0:
                 self._last_seq = seq
-            self._latest_telem = pkt
+            self._latest_telem    = pkt
+            self._telem_ts        = time.time()
+            self._no_telem_warned = True   # suppress the "no FC data" warning
             self.flog.write_telem(pkt)
             self.root.after(0, self._apply_telem, pkt)
 
@@ -1293,8 +1301,17 @@ class RADHAApp:
                 text="DISCONNECT" if connected else "CONNECT")
             if connected:
                 self.dms.start()
-            elif "DISCONNECTED" in msg:
+                self._conn_time       = time.time()
+                self._no_telem_warned = False
+                # Clear stale telemetry from a previous session so preflight
+                # tests don't read old cached data and false-positive.
+                self._latest_telem    = None
+                self._telem_ts        = 0.0
+            elif "DISCONNECTED" in msg and "RECONNECT" not in msg:
                 self.dms.stop()
+                self._latest_telem    = None
+                self._telem_ts        = 0.0
+                self._no_telem_warned = False
         self.root.after(0, _do)
 
     def _dms_fired(self):
@@ -1319,6 +1336,15 @@ class RADHAApp:
             self._dms_lbl.config(
                 text=f"DMS: {rem:.0f}s",
                 fg=DANGER if rem < 8 else (WARN if rem < 15 else SUBTEXT))
+            # Warn once if connected but no FC telemetry after 5 s
+            if (not self._no_telem_warned
+                    and self._conn_time > 0
+                    and self._telem_ts == 0.0
+                    and time.time() - self._conn_time > 5.0):
+                self._no_telem_warned = True
+                self._log("⚠ Connected to ESP32 but no FC telemetry received — "
+                          "check ESP32↔Mega UART wiring (TX/RX, common GND, "
+                          "voltage divider on Mega→ESP32 line)", WARN)
         else:
             self._dms_lbl.config(text="DMS: --s", fg=SUBTEXT)
         self.root.after(1000, self._tick)
