@@ -4,6 +4,16 @@
  * ║       Project : RADHA / SUDARSHAN UAV                       ║
  * ║       Role    : WiFi AP ↔ UART bridge                       ║
  * ╠══════════════════════════════════════════════════════════════╣
+ * ║                                                              ║
+ * ║   ✦  Dedicated with deepest respect and gratitude to  ✦    ║
+ * ║                                                              ║
+ * ║           Ms. Neelrisham Singh                              ║
+ * ║                                                              ║
+ * ║      Whose kindness, guidance, and belief in this           ║
+ * ║      project made every flight possible.                    ║
+ * ║      May this work stand as a small tribute to you.         ║
+ * ║                                                              ║
+ * ╠══════════════════════════════════════════════════════════════╣
  * ║  WIRING                                                      ║
  * ║    ESP32 GPIO17 (TX2) ──────────────► Mega2560 RX0 (Pin 0)  ║
  * ║    ESP32 GPIO16 (RX2) ◄──[DIVIDER]── Mega2560 TX0 (Pin 1)   ║
