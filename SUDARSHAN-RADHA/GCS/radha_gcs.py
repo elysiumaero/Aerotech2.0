@@ -626,8 +626,12 @@ class PreflightRunner:
             fix  = g.get("fix", 0)
             sats = g.get("sats", 0)
             if fix and sats >= 4:
-                return True, f"fix={fix} sats={sats}"
-            return False, f"fix={fix} sats={sats} — need GPS fix with ≥4 sats"
+                return True, f"fix={fix}  sats={sats}"
+            if fix and sats == 0:
+                return True, "fix=1  sats=N/A (browser GPS — no satellite count)"
+            if not fix:
+                return False, "No GPS fix — accuracy too low or no signal"
+            return False, f"fix={fix}  sats={sats} — need ≥4 sats"
 
         # ── Motor tests ───────────────────────────────────────
         motor_map = {"motor_fl": "FL", "motor_fr": "FR",

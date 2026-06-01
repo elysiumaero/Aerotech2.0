@@ -34,6 +34,7 @@
  */
 
 #include <WiFi.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
 #include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
@@ -238,8 +239,75 @@ void parseRMC(const String& s) {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  GPS WEB PAGE  (served at http://192.168.4.1/)
+//  Self-contained HTML+JS — no app required.
+//  Phone opens this page, taps START, browser streams GPS via POST /gps.
+//  Works on iOS Safari and Android Firefox/Samsung Browser out of the box.
+//  Android Chrome needs a one-time flag:
+//    chrome://flags/#unsafely-treat-insecure-origin-as-secure → add http://192.168.4.1
+// ─────────────────────────────────────────────────────────────
+static const char GPS_PAGE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0d0d0d">
+<title>SUDARSHAN GPS</title>
+<style>
+body{background:#0d0d0d;color:#e0e0e0;font-family:monospace;padding:24px;text-align:center;margin:0}
+h2{color:#00e5ff;margin:0 0 20px}
+.val{font-size:1.3em;color:#00e676;margin:6px 0}
+.err{color:#ff3b3b}.ok{color:#00e676}.dim{color:#555}
+button{background:#00e5ff;color:#000;border:none;padding:14px 28px;
+       border-radius:4px;font-size:1em;cursor:pointer;margin-top:18px;
+       -webkit-tap-highlight-color:transparent}
+#gcs{font-size:0.85em;margin-top:14px}
+</style>
+</head>
+<body>
+<h2>SUDARSHAN GPS LINK</h2>
+<div id="st" class="dim">Tap START to stream GPS to drone</div>
+<div class="val" id="lat">LAT: &#8212;</div>
+<div class="val" id="lon">LON: &#8212;</div>
+<div class="val" id="acc">ACC: &#8212;</div>
+<div class="val" id="hdg">HDG: &#8212;</div>
+<div id="gcs" class="dim">GCS: checking&#8230;</div>
+<button onclick="go()">&#9654; START GPS</button>
+<script>
+function go(){
+  if(!navigator.geolocation){
+    document.getElementById('st').innerHTML='<span class="err">Geolocation not supported</span>';return;
+  }
+  document.getElementById('st').textContent='Requesting GPS…';
+  navigator.geolocation.watchPosition(function(p){
+    var c=p.coords;
+    document.getElementById('lat').textContent='LAT: '+c.latitude.toFixed(6);
+    document.getElementById('lon').textContent='LON: '+c.longitude.toFixed(6);
+    document.getElementById('acc').textContent='ACC: '+c.accuracy.toFixed(0)+'m';
+    document.getElementById('hdg').textContent='HDG: '+(c.heading!=null?c.heading.toFixed(1)+'\xb0':'N/A');
+    document.getElementById('st').innerHTML='<span class="ok">● GPS STREAMING</span>';
+    fetch('/gps',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:c.latitude,lon:c.longitude,
+        alt:c.altitude||0,heading:c.heading||0,acc:c.accuracy})
+    }).catch(function(){});
+  },function(e){
+    document.getElementById('st').innerHTML='<span class="err">'+e.message+'</span>';
+  },{enableHighAccuracy:true,maximumAge:0,timeout:10000});
+}
+setInterval(function(){
+  fetch('/status').then(function(r){return r.json();}).then(function(d){
+    document.getElementById('gcs').innerHTML=
+      d.gcs?'<span class="ok">● GCS CONNECTED</span>':
+            '<span class="dim">GCS: not connected</span>';
+  }).catch(function(){});
+},3000);
+</script>
+</body></html>
+)rawliteral";
+
+// ─────────────────────────────────────────────────────────────
 //  GLOBALS
 // ─────────────────────────────────────────────────────────────
+WebServer  httpServer(80);
 WiFiServer gcsServer(PORT_GCS);
 WiFiServer phoneServer(PORT_PHONE);
 WiFiClient gcsClient;
@@ -265,6 +333,47 @@ unsigned long lastGpsFwd   = 0;
 bool          dmsArmed     = false;
 bool          dmsFired     = false;
 bool          phoneWasConn = false;
+
+// ─────────────────────────────────────────────────────────────
+//  HTTP GPS SERVER  (browser-based GPS — no app required)
+// ─────────────────────────────────────────────────────────────
+void handleRoot() {
+  httpServer.send_P(200, "text/html", GPS_PAGE);
+}
+
+void handleGpsPost() {
+  if (!httpServer.hasArg("plain")) { httpServer.send(400); return; }
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, httpServer.arg("plain")) != DeserializationError::Ok) {
+    httpServer.send(400); return;
+  }
+  gps.lat     = doc["lat"]     | (double)0.0;
+  gps.lon     = doc["lon"]     | (double)0.0;
+  gps.alt     = doc["alt"]     | 0.0f;
+  gps.heading = doc["heading"] | 0.0f;
+  float acc   = doc["acc"]     | 999.0f;
+  gps.fix     = (acc < 100.0f) ? 1 : 0;  // browser API has no fix-type field
+  gps.sats    = 0;                         // not available from browser API
+  gps.fresh   = true;
+  httpServer.send(200, "application/json", "{\"ok\":1}");
+  Serial.printf("[HTTP ] GPS  lat=%.6f  lon=%.6f  acc=%.0fm  fix=%d\n",
+                gps.lat, gps.lon, acc, gps.fix);
+}
+
+void handleStatus() {
+  bool gcsConn = (gcsClient && gcsClient.connected());
+  String body = "{\"gcs\":" + String(gcsConn ? 1 : 0) +
+                ",\"fix\":" + String(gps.fix) + "}";
+  httpServer.send(200, "application/json", body);
+}
+
+void setupHTTP() {
+  httpServer.on("/",       HTTP_GET,  handleRoot);
+  httpServer.on("/gps",    HTTP_POST, handleGpsPost);
+  httpServer.on("/status", HTTP_GET,  handleStatus);
+  httpServer.begin();
+  Serial.println("[HTTP ] GPS web page at http://192.168.4.1/");
+}
 
 // ─────────────────────────────────────────────────────────────
 //  SETUP
@@ -293,6 +402,7 @@ void setup() {
   phoneServer.begin();
   Serial.printf("[TCP  ] GCS:%d  Phone:%d (NMEA — GPS Server by Metrologic, TCP CLIENT mode)\n",
                 PORT_GCS, PORT_PHONE);
+  setupHTTP();
 
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED_PIN, HIGH); delay(80);
@@ -305,6 +415,7 @@ void setup() {
 //  LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
+  httpServer.handleClient();
   acceptClients();
   readGCS();
   readPhone();
