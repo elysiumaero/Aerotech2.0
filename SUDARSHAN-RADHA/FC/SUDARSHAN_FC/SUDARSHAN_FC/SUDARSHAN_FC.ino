@@ -191,7 +191,10 @@ String uartBuf = "";
 // ─────────────────────────────────────────────────────────────
 //  MPU6050  (direct I2C register access)
 // ─────────────────────────────────────────────────────────────
-#define MPU  0x68
+
+// Address is probed at init — AD0 LOW → 0x68, AD0 HIGH → 0x69
+static uint8_t MPU = 0x68;
+bool imuOk = false;
 
 void mpuWrite(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(MPU);
@@ -203,6 +206,13 @@ bool mpuInit() {
   Wire.begin();
   Wire.setClock(400000);
   delay(50);
+
+  // Probe both I2C addresses — AD0 pin determines which one is active
+  for (uint8_t addr : {(uint8_t)0x68, (uint8_t)0x69}) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) { MPU = addr; break; }
+  }
+
   mpuWrite(0x6B, 0x00);  // wake
   mpuWrite(0x1B, 0x00);  // gyro  ±250 °/s
   mpuWrite(0x1C, 0x00);  // accel ±2 g
@@ -211,7 +221,9 @@ bool mpuInit() {
   Wire.write(0x75);
   Wire.endTransmission(false);
   Wire.requestFrom((uint8_t)MPU, (uint8_t)1);
-  return Wire.available() && Wire.read() == 0x68;
+  if (!Wire.available()) return false;
+  uint8_t who = Wire.read();
+  return (who == 0x68 || who == 0x69);  // WHO_AM_I register value
 }
 
 void mpuRead() {
@@ -356,6 +368,7 @@ void handleCmd(const String& line) {
 
   // ── ARM ───────────────────────────────────────────────────
   if (!strcmp(cmd, "ARM")) {
+    if (!imuOk) { ack("ARM", false, "IMU not found — check SDA/SCL/VCC wiring"); return; }
     if (mode != MODE_DISARMED) { ack("ARM",false,"already armed"); return; }
     home_lat = gps_lat;  home_lon = gps_lon;
     pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
@@ -571,8 +584,10 @@ void sendTelemetry() {
 void controlLoop(float dt) {
 
   // ── Read sensors ──────────────────────────────────────────
-  mpuRead();
-  computeAngles(dt);
+  if (imuOk) {
+    mpuRead();
+    computeAngles(dt);
+  }
 
   // Sonar is read in the main loop at 25 Hz — NOT here.
   // pulseIn() is blocking (up to 23 ms) and would corrupt dt
@@ -598,12 +613,13 @@ void controlLoop(float dt) {
     }
   }
 
-  // ── Sonar stale warning ────────────────────────────────────
-  if (sonarStale && mode == MODE_HOVER) {
-    // Disable altitude hold — sonar out of range; maintain last throttle
-    // (pidAlt will still run but with stale data; operator must take over)
+  // ── Sonar stale warning (one-shot log — not every 250Hz tick) ────
+  static bool sonarStaleLogged = false;
+  if (sonarStale && !sonarStaleLogged) {
+    sonarStaleLogged = true;
     DBG_SERIAL.println("[SONAR] STALE — altitude hold unreliable");
   }
+  if (!sonarStale) sonarStaleLogged = false;
 
   // ── Mode logic ────────────────────────────────────────────
   switch (mode) {
@@ -705,16 +721,20 @@ void setup() {
   delay(2500);
   DBG_SERIAL.println("[ESC ] ready");
 
-  // IMU
-  if (!mpuInit()) {
-    DBG_SERIAL.println("[IMU ] ERROR — MPU6050 not found! Check wiring.");
-    while (true) delay(500);
+  // IMU — probe both addresses (AD0 LOW=0x68, AD0 HIGH=0x69)
+  imuOk = mpuInit();
+  if (!imuOk) {
+    DBG_SERIAL.println("[IMU ] ERROR — MPU6050 not found at 0x68 or 0x69!");
+    DBG_SERIAL.println("[IMU ] Check: SDA→Pin20 SCL→Pin21 VCC→3.3V GND common");
+    DBG_SERIAL.println("[IMU ] FC continues — ARM is BLOCKED until IMU detected");
+  } else {
+    DBG_SERIAL.printf("[IMU ] MPU6050 OK at 0x%02X\n", MPU);
+    mpuCalibrate();
   }
-  DBG_SERIAL.println("[IMU ] MPU6050 OK");
-  mpuCalibrate();
 
   // First sonar read
   alt_cm = readSonar();
+  sonarValidMs = millis();   // prevent premature stale flag on boot
   DBG_SERIAL.printf("[SONAR] %.1f cm\n", alt_cm);
 
   // PID init   ( Kp,   Ki,    Kd,   limit )
