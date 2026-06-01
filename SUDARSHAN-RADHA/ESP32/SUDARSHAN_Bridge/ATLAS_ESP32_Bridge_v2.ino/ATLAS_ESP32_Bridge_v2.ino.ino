@@ -275,7 +275,7 @@ button{background:#00e5ff;color:#000;border:none;padding:14px 28px;
 <script>
 function go(){
   if(!navigator.geolocation){
-    document.getElementById('st').innerHTML='<span class="err">Geolocation not supported</span>';return;
+    document.getElementById('st').innerHTML='<span class="err">Geolocation not supported by this browser</span>';return;
   }
   document.getElementById('st').textContent='Requesting GPS…';
   navigator.geolocation.watchPosition(function(p){
@@ -290,7 +290,16 @@ function go(){
         alt:c.altitude||0,heading:c.heading||0,acc:c.accuracy})
     }).catch(function(){});
   },function(e){
-    document.getElementById('st').innerHTML='<span class="err">'+e.message+'</span>';
+    var msg=e.message||'GPS error';
+    var hint='';
+    if(msg.indexOf('secure')!==-1||msg.indexOf('origin')!==-1||e.code===1){
+      hint='<br><span class="dim">Using Chrome? One-time fix:<br>'
+          +'1. Open chrome://flags/#unsafely-treat-insecure-origin-as-secure<br>'
+          +'2. Add http://192.168.4.1 and set to Enabled<br>'
+          +'3. Relaunch Chrome<br>'
+          +'Or use Firefox / Safari instead.</span>';
+    }
+    document.getElementById('st').innerHTML='<span class="err">'+msg+'</span>'+hint;
   },{enableHighAccuracy:true,maximumAge:0,timeout:10000});
 }
 setInterval(function(){

@@ -25,6 +25,11 @@ import sys
 import hashlib
 import base64
 import secrets
+import ssl
+import ipaddress
+import datetime
+import subprocess
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # ── Optional AES dependency ───────────────────────────────────
 try:
@@ -44,7 +49,234 @@ except ImportError:
     AES_KEY         = "your32hexcharkey0000000000000000"
     ENCRYPT_ENABLED = False
 
-AUTH_FILE = os.path.join(os.path.dirname(__file__), "auth.json")
+AUTH_FILE    = os.path.join(os.path.dirname(__file__), "auth.json")
+GPS_TLS_CERT = os.path.join(os.path.dirname(__file__), "gcs_tls_cert.pem")
+GPS_TLS_KEY  = os.path.join(os.path.dirname(__file__), "gcs_tls_key.pem")
+GPS_HTTPS_PORT = 8443
+
+# ── GPS HTTPS page (served over TLS so navigator.geolocation works) ─────────
+# Identical layout to the ESP32 HTTP fallback page; same JS paths (/gps, /status).
+_GPS_PAGE_HTML = """\
+<!DOCTYPE html><html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0d0d0d">
+<title>SUDARSHAN GPS</title>
+<style>
+body{background:#0d0d0d;color:#e0e0e0;font-family:monospace;padding:24px;text-align:center;margin:0}
+h2{color:#00e5ff;margin:0 0 20px}
+.val{font-size:1.3em;color:#00e676;margin:6px 0}
+.err{color:#ff3b3b}.ok{color:#00e676}.dim{color:#555}.note{font-size:.8em;color:#555;margin-top:8px}
+button{background:#00e5ff;color:#000;border:none;padding:14px 28px;
+       border-radius:4px;font-size:1em;cursor:pointer;margin-top:18px;
+       -webkit-tap-highlight-color:transparent}
+#gcs{font-size:0.85em;margin-top:14px}
+</style>
+</head>
+<body>
+<h2>SUDARSHAN GPS LINK</h2>
+<div id="st" class="dim">Tap START to stream GPS to drone</div>
+<div class="val" id="lat">LAT: &#8212;</div>
+<div class="val" id="lon">LON: &#8212;</div>
+<div class="val" id="acc">ACC: &#8212;</div>
+<div class="val" id="hdg">HDG: &#8212;</div>
+<div id="gcs" class="dim">GCS: checking&#8230;</div>
+<button onclick="go()">&#9654; START GPS</button>
+<div class="note">Served securely via GCS laptop &mdash; all browsers supported</div>
+<script>
+function go(){
+  if(!navigator.geolocation){
+    document.getElementById('st').innerHTML='<span class="err">Geolocation not supported</span>';return;
+  }
+  document.getElementById('st').textContent='Requesting GPS…';
+  navigator.geolocation.watchPosition(function(p){
+    var c=p.coords;
+    document.getElementById('lat').textContent='LAT: '+c.latitude.toFixed(6);
+    document.getElementById('lon').textContent='LON: '+c.longitude.toFixed(6);
+    document.getElementById('acc').textContent='ACC: '+c.accuracy.toFixed(0)+'m';
+    document.getElementById('hdg').textContent='HDG: '+(c.heading!=null?c.heading.toFixed(1)+'\xb0':'N/A');
+    document.getElementById('st').innerHTML='<span class="ok">● GPS STREAMING</span>';
+    fetch('/gps',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:c.latitude,lon:c.longitude,
+        alt:c.altitude||0,heading:c.heading||0,acc:c.accuracy})
+    }).catch(function(){});
+  },function(e){
+    document.getElementById('st').innerHTML='<span class="err">'+(e.message||'GPS error')+'</span>';
+  },{enableHighAccuracy:true,maximumAge:0,timeout:10000});
+}
+setInterval(function(){
+  fetch('/status').then(function(r){return r.json();}).then(function(d){
+    document.getElementById('gcs').innerHTML=
+      d.gcs?'<span class="ok">● GCS CONNECTED</span>':
+            '<span class="dim">GCS: not connected</span>';
+  }).catch(function(){});
+},3000);
+</script>
+</body></html>
+"""
+
+# ── TLS certificate helpers ───────────────────────────────────────────────────
+
+def _detect_ap_ip():
+    """Return the laptop's IP on the SUDARSHAN_AP network (192.168.4.x), or None."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.168.4.1", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip if ip.startswith("192.168.4.") else None
+    except Exception:
+        return None
+
+def _ensure_tls_cert():
+    """Generate a self-signed cert valid for all 192.168.4.1–5 IPs (10-year)."""
+    if os.path.exists(GPS_TLS_CERT) and os.path.exists(GPS_TLS_KEY):
+        return True
+
+    san_ips = [f"192.168.4.{i}" for i in range(1, 6)]
+
+    # Try cryptography library (already a dep for AES)
+    try:
+        from cryptography import x509 as _x509
+        from cryptography.x509.oid import NameOID as _OID
+        from cryptography.hazmat.primitives import hashes as _H, serialization as _S
+        from cryptography.hazmat.primitives.asymmetric import ec as _EC
+
+        key  = _EC.generate_private_key(_EC.SECP256R1())
+        subj = _x509.Name([_x509.NameAttribute(_OID.COMMON_NAME, "SUDARSHAN UAV")])
+        ip_sans = [_x509.IPAddress(ipaddress.ip_address(ip)) for ip in san_ips]
+        cert = (
+            _x509.CertificateBuilder()
+            .subject_name(subj).issuer_name(subj)
+            .public_key(key.public_key())
+            .serial_number(_x509.random_serial_number())
+            .not_valid_before(datetime.datetime.utcnow())
+            .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
+            .add_extension(_x509.SubjectAlternativeName(ip_sans), critical=False)
+            .sign(key, _H.SHA256())
+        )
+        with open(GPS_TLS_CERT, "wb") as f:
+            f.write(cert.public_bytes(_S.Encoding.PEM))
+        with open(GPS_TLS_KEY, "wb") as f:
+            f.write(key.private_bytes(_S.Encoding.PEM,
+                                      _S.PrivateFormat.PKCS8,
+                                      _S.NoEncryption()))
+        return True
+    except BaseException:
+        pass
+
+    # Fall back to subprocess openssl (Linux/macOS/WSL)
+    try:
+        sans_str = ",".join(f"IP:{ip}" for ip in san_ips)
+        subprocess.run([
+            "openssl", "req", "-x509", "-nodes",
+            "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-keyout", GPS_TLS_KEY,
+            "-out",    GPS_TLS_CERT,
+            "-days",   "3650",
+            "-subj",   "/CN=SUDARSHAN UAV",
+            "-addext",  f"subjectAltName={sans_str}",
+        ], check=True, capture_output=True)
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
+class GpsHttpsServer:
+    """HTTPS GPS page server — lets any phone browser stream GPS to the drone.
+
+    The phone connects to https://[laptop-ip]:8443/, taps START, grants location
+    permission, and GPS flows: phone → GCS (here) → ESP32 TCP → FC UART.
+    HTTPS is required because browsers block navigator.geolocation on plain HTTP.
+    The self-signed cert will trigger a one-time browser warning; tap
+    'Advanced → Proceed' and it's remembered for the site.
+    """
+
+    def __init__(self):
+        self._server  = None
+        self.url      = None
+        self._gps_cb  = None
+
+    def set_gps_callback(self, cb):
+        self._gps_cb = cb
+
+    def start(self, log_fn=None):
+        ip = _detect_ap_ip()
+        if not ip:
+            if log_fn:
+                log_fn("GPS HTTPS: not on SUDARSHAN_AP — use GPS Server app or Chrome flag", WARN)
+            return None
+
+        if not _ensure_tls_cert():
+            if log_fn:
+                log_fn("GPS HTTPS: cert generation failed (need openssl or cryptography lib)", WARN)
+            return None
+
+        self.url   = f"https://{ip}:{GPS_HTTPS_PORT}/"
+        _gps_cb    = lambda d: self._gps_cb(d) if self._gps_cb else None
+        _port      = GPS_HTTPS_PORT
+
+        class _H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path in ("/", "/index.html"):
+                    body = _GPS_PAGE_HTML.encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type",   "text/html; charset=utf-8")
+                    self.send_header("Content-Length", len(body))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path == "/status":
+                    body = b'{"gcs":1}'
+                    self.send_response(200)
+                    self.send_header("Content-Type",   "application/json")
+                    self.send_header("Content-Length", len(body))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def do_POST(self):
+                if self.path == "/gps":
+                    try:
+                        n    = int(self.headers.get("Content-Length", 0))
+                        data = json.loads(self.rfile.read(n))
+                        _gps_cb(data)
+                        body = b'{"ok":1}'
+                        self.send_response(200)
+                        self.send_header("Content-Type",   "application/json")
+                        self.send_header("Content-Length", len(body))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    except Exception:
+                        self.send_response(400)
+                        self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *_):
+                pass  # Suppress HTTP access log
+
+        try:
+            srv = HTTPServer((ip, _port), _H)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(GPS_TLS_CERT, GPS_TLS_KEY)
+            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+            self._server = srv
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            return self.url
+        except Exception as e:
+            if log_fn:
+                log_fn(f"GPS HTTPS server failed: {e}", WARN)
+            return None
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+
 
 # ── Palette ───────────────────────────────────────────────────
 BG      = "#0d0d0d"
@@ -684,8 +916,11 @@ class RADHAApp:
         self._conn_time          = 0.0    # epoch when last connection was established
         self._no_telem_warned    = False  # one-shot "no FC data" warning fired
         self._latest_gps         = {}
+        self._gps_fresh          = False  # True when a new GPS fix arrived from HTTPS server
         self._preflight_results  = {t[0]: "idle" for t in PREFLIGHT_TESTS}
         self._preflight_critical = False   # True when tests 1–4 all pass
+
+        self._gps_https = GpsHttpsServer()
 
         self.flog   = FlightLog()
         crypto      = CryptoLayer(AES_KEY, ENCRYPT_ENABLED)
@@ -709,14 +944,56 @@ class RADHAApp:
         self._build_ui()
         self._switch_tab("FLIGHT")
         self._tick()
+        self._gps_fwd_tick()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         enc_state = "AES-128-CBC" if ENCRYPT_ENABLED else "plaintext"
         self._log(f"GCS v1.2 — encryption: {enc_state}", SUBTEXT)
 
+        # Start HTTPS GPS server (serves GPS page so any browser can stream GPS)
+        self._gps_https.set_gps_callback(self._on_phone_gps_https)
+        https_url = self._gps_https.start(log_fn=self._log)
+        if https_url:
+            self._log(f"GPS page (HTTPS, works on all browsers): {https_url}", SUCCESS)
+            self._log("  → Phone: connect to SUDARSHAN_AP → open that URL → tap START GPS", SUBTEXT)
+            self._log("  → First time: tap 'Advanced → Proceed' past the cert warning", SUBTEXT)
+
     def _on_close(self):
+        self._gps_https.stop()
         self.flog.close()
         self.root.destroy()
+
+    def _on_phone_gps_https(self, data: dict):
+        """GPS data arrived from phone via the GCS HTTPS endpoint."""
+        acc = float(data.get("acc", 999.0))
+        self._latest_gps = {
+            "lat":     float(data.get("lat", 0.0)),
+            "lon":     float(data.get("lon", 0.0)),
+            "alt":     float(data.get("alt", 0.0)),
+            "heading": float(data.get("heading", 0.0)),
+            "baro_cm": 0,
+            "fix":     1 if acc < 100.0 else 0,
+            "sats":    0,
+        }
+        self._gps_fresh = True
+        self.root.after(0, self._apply_gps, self._latest_gps)
+
+    def _gps_fwd_tick(self):
+        """Forward fresh GPS from HTTPS server to ESP32 at 5 Hz."""
+        if self._gps_fresh and self.conn.connected:
+            self._gps_fresh = False
+            g = self._latest_gps
+            self.conn.send({
+                "cmd":     "GPS",
+                "lat":     g.get("lat", 0.0),
+                "lon":     g.get("lon", 0.0),
+                "alt":     g.get("alt", 0.0),
+                "heading": g.get("heading", 0.0),
+                "baro_cm": 0,
+                "fix":     g.get("fix", 0),
+                "sats":    0,
+            })
+        self.root.after(200, self._gps_fwd_tick)
 
     # ── UI BUILD ─────────────────────────────────────────────
 

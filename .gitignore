@@ -19,6 +19,8 @@ SUDARSHAN-RADHA/GCS/logs/*.csv
 credentials.h
 SUDARSHAN-RADHA/GCS/credentials.py
 SUDARSHAN-RADHA/GCS/auth.json
+SUDARSHAN-RADHA/GCS/gcs_tls_cert.pem
+SUDARSHAN-RADHA/GCS/gcs_tls_key.pem
 
 # ── Arduino build artifacts ───────────────────────────────────
 build/
