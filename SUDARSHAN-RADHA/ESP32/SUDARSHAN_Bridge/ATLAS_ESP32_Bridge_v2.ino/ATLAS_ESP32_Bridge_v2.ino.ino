@@ -5,13 +5,9 @@
  * ║       Role    : WiFi AP ↔ UART bridge                       ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║                                                              ║
- * ║   ✦  Dedicated with deepest respect and gratitude to  ✦    ║
- * ║                                                              ║
- * ║           Ms. Neelrisham Singh                              ║
- * ║                                                              ║
- * ║      Whose kindness, guidance, and belief in this           ║
- * ║      project made every flight possible.                    ║
- * ║      May this work stand as a small tribute to you.         ║
+ * ║   ✦  With love and gratitude to Neelrisham Singh  ✦        ║
+ * ║      For your endless support, belief, and love.            ║
+ * ║      Every flight carries a piece of you.   — Sudarshan    ║
  * ║                                                              ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  WIRING                                                      ║
@@ -249,76 +245,219 @@ void parseRMC(const String& s) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  GPS WEB PAGE  (served at http://192.168.4.1/)
-//  Self-contained HTML+JS — no app required.
-//  Phone opens this page, taps START, browser streams GPS via POST /gps.
-//  Works on iOS Safari and Android Firefox/Samsung Browser out of the box.
-//  Android Chrome needs a one-time flag:
+//  WEB GCS PAGE  (served at http://192.168.4.1/)
+//  Full ground-control station in the phone browser — no laptop needed.
+//  Telemetry polled via GET /api/telem (1s).
+//  Commands sent via POST /api/cmd.
+//  GPS streamed via POST /gps (existing endpoint).
+//  Android Chrome needs a one-time flag for geolocation on plain HTTP:
 //    chrome://flags/#unsafely-treat-insecure-origin-as-secure → add http://192.168.4.1
 // ─────────────────────────────────────────────────────────────
-static const char GPS_PAGE[] PROGMEM = R"rawliteral(
+static const char GCS_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html>
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="theme-color" content="#0d0d0d">
-<title>SUDARSHAN GPS</title>
+<title>SUDARSHAN GCS</title>
 <style>
-body{background:#0d0d0d;color:#e0e0e0;font-family:monospace;padding:24px;text-align:center;margin:0}
-h2{color:#00e5ff;margin:0 0 20px}
-.val{font-size:1.3em;color:#00e676;margin:6px 0}
-.err{color:#ff3b3b}.ok{color:#00e676}.dim{color:#555}
-button{background:#00e5ff;color:#000;border:none;padding:14px 28px;
-       border-radius:4px;font-size:1em;cursor:pointer;margin-top:18px;
-       -webkit-tap-highlight-color:transparent}
-#gcs{font-size:0.85em;margin-top:14px}
+*{box-sizing:border-box}
+body{background:#0d0d0d;color:#e0e0e0;font-family:Consolas,monospace;
+     margin:0;padding:8px 8px 4px}
+h2{color:#00e5ff;margin:0 0 5px;font-size:.9em;text-align:center;letter-spacing:2px}
+.row{display:flex;gap:4px;margin-bottom:5px}
+.card{background:#111;border:1px solid #1e1e1e;border-radius:3px;
+      padding:4px 6px;flex:1;min-width:0}
+.lbl{color:#444;font-size:.68em;text-transform:uppercase;white-space:nowrap}
+.val{color:#00e676;font-size:.98em;font-weight:bold;white-space:nowrap;overflow:hidden}
+#mb{background:#111;border:1px solid #1e1e1e;border-radius:3px;
+    padding:5px 8px;margin-bottom:5px;display:flex;
+    align-items:center;justify-content:space-between;font-size:.82em}
+#mval{color:#00e5ff;font-weight:bold;letter-spacing:1px}
+.btns{display:flex;gap:4px;margin-bottom:5px}
+button{background:#0a0a0a;color:#00e5ff;border:1px solid #00e5ff;
+       padding:9px 0;border-radius:3px;font-family:Consolas,monospace;
+       font-size:.78em;cursor:pointer;flex:1;
+       -webkit-tap-highlight-color:transparent;
+       -webkit-user-select:none;user-select:none}
+button:active{background:#00e5ff;color:#000}
+#bkill{border-color:#ff3b3b;color:#ff3b3b}
+#bkill.k2{background:#ff3b3b;color:#000;animation:bl .4s step-end infinite}
+#barm{border-color:#00e676;color:#00e676}
+#bdis{border-color:#ffcc00;color:#ffcc00}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.15}}
+#dms{text-align:center;font-size:.76em;color:#444;margin-bottom:5px}
+#dmsc{font-size:1.1em;font-weight:bold;color:#00e676}
+#dmsc.w{color:#ffcc00}#dmsc.c{color:#ff3b3b}
+canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1e}
+#ovr{display:none;background:#111;border:1px solid #1e1e1e;
+     border-radius:3px;padding:6px;margin-bottom:5px}
+#thrsldr{width:100%;accent-color:#00e5ff;margin-top:3px}
+#gpsbtn{width:100%;background:#0a0a0a;color:#444;
+        border:1px solid #222;padding:8px;border-radius:3px;
+        font-family:Consolas,monospace;font-size:.78em;cursor:pointer;
+        -webkit-tap-highlight-color:transparent}
+#gpsbtn.on{color:#00e5ff;border-color:#00e5ff}
 </style>
 </head>
 <body>
-<h2>SUDARSHAN GPS LINK</h2>
-<div id="st" class="dim">Tap START to stream GPS to drone</div>
-<div class="val" id="lat">LAT: &#8212;</div>
-<div class="val" id="lon">LON: &#8212;</div>
-<div class="val" id="acc">ACC: &#8212;</div>
-<div class="val" id="hdg">HDG: &#8212;</div>
-<div id="gcs" class="dim">GCS: checking&#8230;</div>
-<button onclick="go()">&#9654; START GPS</button>
+<h2>&#9650; SUDARSHAN GCS &#9650;</h2>
+
+<div id="mb">
+  <span id="mval">OFFLINE</span>
+  <span id="armd" style="color:#444">DISARMED</span>
+  <span id="live" style="color:#444">&#9679; OFFLINE</span>
+</div>
+
+<div class="row">
+  <div class="card"><div class="lbl">ROLL</div><div class="val" id="troll">---</div></div>
+  <div class="card"><div class="lbl">PITCH</div><div class="val" id="tpitch">---</div></div>
+  <div class="card"><div class="lbl">YAW</div><div class="val" id="tyaw">---</div></div>
+  <div class="card"><div class="lbl">ALT cm</div><div class="val" id="talt">---</div></div>
+  <div class="card"><div class="lbl">BAT V</div><div class="val" id="tbat" style="color:#ffcc00">---</div></div>
+</div>
+
+<canvas id="ati" width="90" height="90"></canvas>
+
+<div id="dms">DEAD-MAN: <span id="dmsc">--</span>s</div>
+
+<div class="btns">
+  <button id="barm"  onclick="sc('ARM')">ARM</button>
+  <button id="bdis"  onclick="sc('DISARM')">DISARM</button>
+  <button id="bhov"  onclick="sc('HOVER')">HOVER</button>
+  <button id="blan"  onclick="sc('LAND')">LAND</button>
+  <button id="bkill" onclick="kTap()">KILL</button>
+</div>
+<div class="btns">
+  <button onclick="sc('PRESET',{id:1})">PST 1</button>
+  <button onclick="sc('PRESET',{id:2})">PST 2</button>
+  <button onclick="togOvr()">OVR&#9660;</button>
+</div>
+
+<div id="ovr">
+  <div class="lbl">THROTTLE <span id="thrv">1050</span> us</div>
+  <input id="thrsldr" type="range" min="1050" max="1900" value="1050"
+    oninput="document.getElementById('thrv').textContent=this.value"
+    onchange="sc('OVERRIDE',{throttle:parseInt(this.value)})">
+</div>
+
+<div class="row">
+  <div class="card"><div class="lbl">LAT</div><div id="glat" class="val" style="color:#ccc">---</div></div>
+  <div class="card"><div class="lbl">LON</div><div id="glon" class="val" style="color:#ccc">---</div></div>
+  <div class="card"><div class="lbl">FIX/SAT</div><div id="gfix" class="val" style="color:#ccc">---</div></div>
+</div>
+
+<button id="gpsbtn" onclick="gpsStart()">&#9654; START GPS STREAMING</button>
+
 <script>
-function go(){
-  if(!navigator.geolocation){
-    document.getElementById('st').innerHTML='<span class="err">Geolocation not supported by this browser</span>';return;
+var dV=30,kAr=false,kTm=0,gW=0;
+var cv=document.getElementById('ati'),cx=cv.getContext('2d');
+var W=90,H=90,MX=45,MY=45,R=43;
+
+function drawAti(r,p){
+  cx.clearRect(0,0,W,H);
+  cx.save();
+  cx.beginPath();cx.arc(MX,MY,R,0,2*Math.PI);cx.clip();
+  cx.save();cx.translate(MX,MY);cx.rotate(-r*Math.PI/180);
+  var ry=p*1.5;
+  cx.fillStyle='#0d2a42';cx.fillRect(-R,-R*2-ry,R*2,R*2);
+  cx.fillStyle='#2a1400';cx.fillRect(-R,-ry,R*2,R*2);
+  cx.restore();
+  cx.beginPath();cx.arc(MX,MY,R,0,2*Math.PI);
+  cx.strokeStyle='#333';cx.lineWidth=1;cx.stroke();
+  cx.strokeStyle='rgba(255,255,255,.7)';cx.lineWidth=1.5;
+  cx.beginPath();cx.moveTo(MX-25,MY);cx.lineTo(MX-8,MY);cx.stroke();
+  cx.beginPath();cx.moveTo(MX+8,MY);cx.lineTo(MX+25,MY);cx.stroke();
+  cx.beginPath();cx.moveTo(MX,MY-4);cx.lineTo(MX,MY+4);cx.stroke();
+  cx.restore();
+}
+drawAti(0,0);
+
+function setDms(v){
+  dV=v;
+  var e=document.getElementById('dmsc');
+  e.textContent=v;
+  e.className=v<=8?'c':v<=15?'w':'';
+}
+setInterval(function(){if(dV>0)setDms(dV-1);},1000);
+
+function sc(cmd,extra){
+  setDms(30);
+  var b={cmd:cmd};
+  if(extra){for(var k in extra)b[k]=extra[k];}
+  fetch('/api/cmd',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(b)}).catch(function(){});
+}
+
+setInterval(function(){sc('PING');},25000);
+
+function kTap(){
+  var b=document.getElementById('bkill');
+  if(!kAr){
+    kAr=true;b.classList.add('k2');b.textContent='CONFIRM';
+    clearTimeout(kTm);
+    kTm=setTimeout(function(){kAr=false;b.classList.remove('k2');b.textContent='KILL';},3000);
+  } else {
+    clearTimeout(kTm);kAr=false;b.classList.remove('k2');b.textContent='KILL';
+    sc('KILL');
   }
-  document.getElementById('st').textContent='Requesting GPS…';
-  navigator.geolocation.watchPosition(function(p){
+}
+
+function togOvr(){
+  var d=document.getElementById('ovr');
+  d.style.display=(d.style.display==='block')?'none':'block';
+}
+
+function pollTelem(){
+  fetch('/api/telem').then(function(r){return r.json();}).then(function(d){
+    var lv=document.getElementById('live');
+    lv.textContent='● LIVE';lv.style.color='#00e676';
+    document.getElementById('mval').textContent=(d.mode||'---');
+    var ae=document.getElementById('armd');
+    if(d.armed){ae.textContent='ARMED';ae.style.color='#00e676';}
+    else{ae.textContent='DISARMED';ae.style.color='#444';}
+    var f=function(v,n){return(typeof v==='number')?v.toFixed(n===undefined?1:n):'---';};
+    document.getElementById('troll').textContent=f(d.roll)+'*';
+    document.getElementById('tpitch').textContent=f(d.pitch)+'*';
+    document.getElementById('tyaw').textContent=f(d.yaw)+'*';
+    document.getElementById('talt').textContent=f(d.alt,0);
+    document.getElementById('tbat').textContent=f(d.bat,2);
+    if(typeof d.roll==='number')drawAti(d.roll||0,d.pitch||0);
+    if(d.gps_lat&&d.gps_lat!==0){
+      document.getElementById('glat').textContent=d.gps_lat.toFixed(6);
+      document.getElementById('glon').textContent=d.gps_lon.toFixed(6);
+      document.getElementById('gfix').textContent=(d.gps_fix?'FIX':'---')+'/'+(d.gps_sats||0);
+    }
+  }).catch(function(){
+    var lv=document.getElementById('live');
+    lv.textContent='● OFFLINE';lv.style.color='#444';
+  });
+}
+setInterval(pollTelem,1000);
+pollTelem();
+
+function gpsStart(){
+  var btn=document.getElementById('gpsbtn');
+  if(!navigator.geolocation){
+    btn.textContent='Geolocation not supported';return;
+  }
+  btn.textContent='Requesting GPS...';
+  if(gW)navigator.geolocation.clearWatch(gW);
+  gW=navigator.geolocation.watchPosition(function(p){
     var c=p.coords;
-    document.getElementById('lat').textContent='LAT: '+c.latitude.toFixed(6);
-    document.getElementById('lon').textContent='LON: '+c.longitude.toFixed(6);
-    document.getElementById('acc').textContent='ACC: '+c.accuracy.toFixed(0)+'m';
-    document.getElementById('hdg').textContent='HDG: '+(c.heading!=null?c.heading.toFixed(1)+'\xb0':'N/A');
-    document.getElementById('st').innerHTML='<span class="ok">● GPS STREAMING</span>';
-    fetch('/gps',{method:'POST',headers:{'Content-Type':'application/json'},
+    btn.textContent='● GPS STREAMING ('+c.accuracy.toFixed(0)+'m)';
+    btn.classList.add('on');
+    fetch('/gps',{method:'POST',
+      headers:{'Content-Type':'application/json'},
       body:JSON.stringify({lat:c.latitude,lon:c.longitude,
         alt:c.altitude||0,heading:c.heading||0,acc:c.accuracy})
     }).catch(function(){});
   },function(e){
-    var msg=e.message||'GPS error';
-    var hint='';
-    if(msg.indexOf('secure')!==-1||msg.indexOf('origin')!==-1||e.code===1){
-      hint='<br><span class="dim">Using Chrome? One-time fix:<br>'
-          +'1. Open chrome://flags/#unsafely-treat-insecure-origin-as-secure<br>'
-          +'2. Add http://192.168.4.1 and set to Enabled<br>'
-          +'3. Relaunch Chrome<br>'
-          +'Or use Firefox / Safari instead.</span>';
-    }
-    document.getElementById('st').innerHTML='<span class="err">'+msg+'</span>'+hint;
+    btn.classList.remove('on');
+    var hint=(e.code===1)?' | Chrome fix: flags unsafely-treat-insecure-origin-as-secure':'';
+    btn.textContent=(e.message||'GPS error')+hint;
   },{enableHighAccuracy:true,maximumAge:0,timeout:10000});
 }
-setInterval(function(){
-  fetch('/status').then(function(r){return r.json();}).then(function(d){
-    document.getElementById('gcs').innerHTML=
-      d.gcs?'<span class="ok">● GCS CONNECTED</span>':
-            '<span class="dim">GCS: not connected</span>';
-  }).catch(function(){});
-},3000);
 </script>
 </body></html>
 )rawliteral";
@@ -353,11 +492,55 @@ bool          dmsArmed     = false;
 bool          dmsFired     = false;
 bool          phoneWasConn = false;
 
+String lastTelemJson = "";   // latest FC telemetry JSON — served to web GCS
+String lastAckJson   = "";   // latest FC ACK JSON — piggybacked on /api/telem
+
 // ─────────────────────────────────────────────────────────────
-//  HTTP GPS SERVER  (browser-based GPS — no app required)
+//  HTTP WEB GCS  (full GCS in phone browser — no laptop required)
 // ─────────────────────────────────────────────────────────────
 void handleRoot() {
-  httpServer.send_P(200, "text/html", GPS_PAGE);
+  httpServer.send_P(200, "text/html", GCS_PAGE);
+}
+
+// GET /api/telem — returns last FC telemetry merged with GPS and ESP32 state
+void handleWebTelem() {
+  if (lastTelemJson.length() == 0) {
+    httpServer.send(200, "application/json",
+                    "{\"mode\":\"DISCONNECTED\",\"armed\":0}");
+    return;
+  }
+  StaticJsonDocument<512> doc;
+  deserializeJson(doc, lastTelemJson);
+  doc["gps_lat"]  = gps.lat;
+  doc["gps_lon"]  = gps.lon;
+  doc["gps_fix"]  = gps.fix;
+  doc["gps_sats"] = gps.sats;
+  doc["gps_hdg"]  = gps.heading;
+  doc["dms_ok"]   = !dmsFired;
+  if (lastAckJson.length() > 0) {
+    doc["last_ack"] = lastAckJson;
+    lastAckJson = "";
+  }
+  String out;
+  serializeJson(doc, out);
+  httpServer.send(200, "application/json", out);
+}
+
+// POST /api/cmd — forwards command JSON to FC, resets ESP32 DMS
+void handleWebCmd() {
+  if (!httpServer.hasArg("plain")) { httpServer.send(400); return; }
+  String body = httpServer.arg("plain");
+  lastPing = millis();
+  dmsFired = false;
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, body) == DeserializationError::Ok) {
+    const char* cmd = doc["cmd"];
+    if (cmd) {
+      Serial.printf("[WEB→FC] %s\n", cmd);
+      sendToFC(body);   // forward every command (incl. PING) to FC to keep FC DMS alive
+    }
+  }
+  httpServer.send(200, "application/json", "{\"ok\":1}");
 }
 
 void handleGpsPost() {
@@ -387,11 +570,13 @@ void handleStatus() {
 }
 
 void setupHTTP() {
-  httpServer.on("/",       HTTP_GET,  handleRoot);
-  httpServer.on("/gps",    HTTP_POST, handleGpsPost);
-  httpServer.on("/status", HTTP_GET,  handleStatus);
+  httpServer.on("/",          HTTP_GET,  handleRoot);
+  httpServer.on("/api/telem", HTTP_GET,  handleWebTelem);
+  httpServer.on("/api/cmd",   HTTP_POST, handleWebCmd);
+  httpServer.on("/gps",       HTTP_POST, handleGpsPost);
+  httpServer.on("/status",    HTTP_GET,  handleStatus);
   httpServer.begin();
-  Serial.println("[HTTP ] GPS web page at http://192.168.4.1/");
+  Serial.println("[HTTP ] Web GCS at http://192.168.4.1/");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -529,7 +714,11 @@ void readFC() {
     char ch = (char)Serial2.read();
     if (ch == '\n') {
       bufFC.trim();
-      if (bufFC.length() > 0) sendToGCS(bufFC);
+      if (bufFC.length() > 0) {
+        if (bufFC.indexOf("\"roll\"") >= 0) lastTelemJson = bufFC;
+        if (bufFC.indexOf("\"ack\"")  >= 0) lastAckJson   = bufFC;
+        sendToGCS(bufFC);
+      }
       bufFC = "";
     } else {
       bufFC += ch;
