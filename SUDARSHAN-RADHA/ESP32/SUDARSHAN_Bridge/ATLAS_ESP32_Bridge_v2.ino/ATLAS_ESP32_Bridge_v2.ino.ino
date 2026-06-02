@@ -163,6 +163,20 @@ String decryptLine(const String& b64str) {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  GPS STATE  (must be before NMEA parsing and HTTP handlers)
+// ─────────────────────────────────────────────────────────────
+struct {
+  double lat     = 0.0;
+  double lon     = 0.0;
+  float  alt     = 0.0;
+  float  heading = 0.0;
+  int    baro_cm = 0;
+  int    fix     = 0;
+  int    sats    = 0;
+  bool   fresh   = false;
+} gps;
+
+// ─────────────────────────────────────────────────────────────
 //  NMEA PARSING  (GPS Server by Metrologic, client mode)
 // ─────────────────────────────────────────────────────────────
 
@@ -474,17 +488,6 @@ WiFiClient phoneClient;
 String bufFC    = "";
 String bufGCS   = "";
 String bufPhone = "";
-
-struct {
-  double lat     = 0.0;
-  double lon     = 0.0;
-  float  alt     = 0.0;
-  float  heading = 0.0;
-  int    baro_cm = 0;
-  int    fix     = 0;
-  int    sats    = 0;
-  bool   fresh   = false;
-} gps;
 
 unsigned long lastPing     = 0;
 unsigned long lastGpsFwd   = 0;

@@ -260,8 +260,10 @@ void mpuCalibrate() {
   gyrCal[0] = sx/500.0f;
   gyrCal[1] = sy/500.0f;
   gyrCal[2] = sz/500.0f;
-  DBG_SERIAL.printf("[IMU ] Offsets: %.3f / %.3f / %.3f\n",
-                    gyrCal[0], gyrCal[1], gyrCal[2]);
+  char _imbuf[64];
+  snprintf(_imbuf, sizeof(_imbuf), "[IMU ] Offsets: %.3f / %.3f / %.3f",
+           gyrCal[0], gyrCal[1], gyrCal[2]);
+  DBG_SERIAL.println(_imbuf);
 }
 
 void computeAngles(float dt) {
@@ -605,7 +607,9 @@ void controlLoop(float dt) {
   if (mode > MODE_DISARMED && mode != MODE_KILL &&
       mode != MODE_LAND    && mode != MODE_FAILSAFE) {
     if (bat_mv_cached > 0 && bat_mv_cached < BAT_CRIT_MV) {
-      DBG_SERIAL.printf("[BAT ] CRITICAL %.0fmV → auto LAND\n", (float)bat_mv_cached);
+      DBG_SERIAL.print(F("[BAT ] CRITICAL "));
+      DBG_SERIAL.print(bat_mv_cached);
+      DBG_SERIAL.println(F("mV -> auto LAND"));
       pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
       sp_roll=0; sp_pitch=0;
       landTimer = millis(); landCount = 0;
@@ -728,14 +732,18 @@ void setup() {
     DBG_SERIAL.println("[IMU ] Check: SDA→Pin20 SCL→Pin21 VCC→3.3V GND common");
     DBG_SERIAL.println("[IMU ] FC continues — ARM is BLOCKED until IMU detected");
   } else {
-    DBG_SERIAL.printf("[IMU ] MPU6050 OK at 0x%02X\n", MPU);
+    DBG_SERIAL.print(F("[IMU ] MPU6050 OK at 0x"));
+    if (MPU < 0x10) DBG_SERIAL.print('0');
+    DBG_SERIAL.println(MPU, HEX);
     mpuCalibrate();
   }
 
   // First sonar read
   alt_cm = readSonar();
   sonarValidMs = millis();   // prevent premature stale flag on boot
-  DBG_SERIAL.printf("[SONAR] %.1f cm\n", alt_cm);
+  DBG_SERIAL.print(F("[SONAR] "));
+  DBG_SERIAL.print(alt_cm, 1);
+  DBG_SERIAL.println(F(" cm"));
 
   // PID init   ( Kp,   Ki,    Kd,   limit )
   pidRoll.init (1.8f, 0.05f, 0.80f, LIM_RP );
