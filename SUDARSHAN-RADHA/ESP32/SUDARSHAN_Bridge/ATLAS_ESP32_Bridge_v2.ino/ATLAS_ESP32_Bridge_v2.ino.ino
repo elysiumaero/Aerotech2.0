@@ -345,6 +345,7 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
   <button onclick="sc('PRESET',{id:1})">PST 1</button>
   <button onclick="sc('PRESET',{id:2})">PST 2</button>
   <button onclick="togOvr()">OVR&#9660;</button>
+  <button onclick="togMT()">MOT&#9660;</button>
 </div>
 
 <div id="ovr">
@@ -354,6 +355,25 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
     onchange="sc('OVERRIDE',{throttle:parseInt(this.value)})">
 </div>
 
+<div id="ackbar" style="display:none;background:#1a1a00;border:1px solid #ffcc00;border-radius:3px;padding:4px 6px;margin-bottom:5px;font-size:.75em;color:#ffcc00"></div>
+<div id="mtest" style="display:none;background:#111;border:1px solid #332200;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#ff9800;margin-bottom:3px">&#9888; MOTOR TEST — REMOVE PROPS — DISARMED only</div>
+  <div class="btns" style="margin:3px 0">
+    <button id="mFL" onclick="mtSel('FL')">FL</button>
+    <button id="mFR" onclick="mtSel('FR')">FR</button>
+    <button id="mRL" onclick="mtSel('RL')">RL</button>
+    <button id="mRR" onclick="mtSel('RR')">RR</button>
+  </div>
+  <div class="lbl">THR <span id="mtthrv">1100</span> us</div>
+  <input id="mtthr" type="range" min="1050" max="1200" value="1100"
+    style="width:100%;accent-color:#00e5ff;margin:2px 0 5px"
+    oninput="document.getElementById('mtthrv').textContent=this.value">
+  <div class="lbl">DURATION <span id="mtdurv">1500</span> ms</div>
+  <input id="mtdur" type="range" min="500" max="2000" value="1500" step="100"
+    style="width:100%;accent-color:#ffcc00;margin:2px 0 5px"
+    oninput="document.getElementById('mtdurv').textContent=this.value">
+  <button style="width:100%;border-color:#ffcc00;color:#ffcc00" onclick="sendMT()">&#9654; RUN TEST</button>
+</div>
 <div class="row">
   <div class="card"><div class="lbl">LAT</div><div id="glat" class="val" style="color:#ccc">---</div></div>
   <div class="card"><div class="lbl">LON</div><div id="glon" class="val" style="color:#ccc">---</div></div>
@@ -434,8 +454,9 @@ function pollTelem(){
     document.getElementById('troll').textContent=f(d.roll)+'*';
     document.getElementById('tpitch').textContent=f(d.pitch)+'*';
     document.getElementById('tyaw').textContent=f(d.yaw)+'*';
-    document.getElementById('talt').textContent=f(d.alt,0);
-    document.getElementById('tbat').textContent=f(d.bat,2);
+    document.getElementById('talt').textContent=typeof d.alt_cm==='number'?d.alt_cm+'cm':'---';
+    document.getElementById('tbat').textContent=typeof d.bat_mv==='number'?(d.bat_mv/1000).toFixed(2)+'V':'---';
+    if(d.last_ack){try{var a=JSON.parse(d.last_ack);var ab=document.getElementById('ackbar');ab.style.display='block';ab.textContent='FC: '+a.ack+' '+a.status+(a.msg?' — '+a.msg:'');clearTimeout(window._ackTm);window._ackTm=setTimeout(function(){ab.style.display='none';},6000);}catch(e){}}
     if(typeof d.roll==='number')drawAti(d.roll||0,d.pitch||0);
     if(d.gps_lat&&d.gps_lat!==0){
       document.getElementById('glat').textContent=d.gps_lat.toFixed(6);
@@ -449,6 +470,26 @@ function pollTelem(){
 }
 setInterval(pollTelem,1000);
 pollTelem();
+
+var mtMot='FL';
+function mtSel(m){
+  ['FL','FR','RL','RR'].forEach(function(x){
+    var b=document.getElementById('m'+x);
+    b.style.background=(x===m)?'#00e5ff':'';
+    b.style.color=(x===m)?'#000':'#00e5ff';
+  });
+  mtMot=m;
+}
+function togMT(){
+  var d=document.getElementById('mtest');
+  d.style.display=(d.style.display==='block')?'none':'block';
+}
+function sendMT(){
+  sc('MOTOR_TEST',{motor:mtMot,
+    throttle:parseInt(document.getElementById('mtthr').value),
+    duration_ms:parseInt(document.getElementById('mtdur').value)});
+}
+mtSel('FL');
 
 function gpsStart(){
   var btn=document.getElementById('gpsbtn');
