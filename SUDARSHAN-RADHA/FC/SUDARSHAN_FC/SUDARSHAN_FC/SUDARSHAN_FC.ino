@@ -384,6 +384,20 @@ void handleCmd(const String& line) {
     return;
   }
 
+  // ── FORCE_ARM  (admin password override — bypasses all pre-flight checks) ──
+  if (!strcmp(cmd, "FORCE_ARM")) {
+    if (mode != MODE_DISARMED) { ack("FORCE_ARM", false, "already armed"); return; }
+    home_lat = gps_lat;  home_lon = gps_lon;
+    pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
+    sp_roll=0; sp_pitch=0; sp_yaw=yaw_gyro;
+    base_thr   = ESC_IDLE;
+    target_alt = alt_cm;
+    escsArm();
+    mode = MODE_HOVER;
+    ack("FORCE_ARM", true, "IMU checks bypassed by admin");
+    return;
+  }
+
   // ── DISARM ────────────────────────────────────────────────
   if (!strcmp(cmd, "DISARM")) {
     mode = MODE_DISARMED;
@@ -568,14 +582,16 @@ void updateMission() {
 // ─────────────────────────────────────────────────────────────
 void sendTelemetry() {
   bat_mv_cached = (int)(analogRead(PIN_BATT) * BATT_SCALE);
-  StaticJsonDocument<256> d;
-  d["roll"]   = (int)(roll_cf  * 10) / 10.0;
-  d["pitch"]  = (int)(pitch_cf * 10) / 10.0;
-  d["yaw"]    = (int)(yaw_gyro * 10) / 10.0;
-  d["alt_cm"] = (int)alt_cm;
-  d["bat_mv"] = bat_mv_cached;
-  d["mode"]   = MODE_NAME[mode];
-  d["armed"]  = (mode > MODE_DISARMED && mode != MODE_KILL) ? 1 : 0;
+  StaticJsonDocument<384> d;
+  d["roll"]     = (int)(roll_cf  * 10) / 10.0;
+  d["pitch"]    = (int)(pitch_cf * 10) / 10.0;
+  d["yaw"]      = (int)(yaw_gyro * 10) / 10.0;
+  d["alt_cm"]   = (int)alt_cm;
+  d["bat_mv"]   = bat_mv_cached;
+  d["mode"]     = MODE_NAME[mode];
+  d["armed"]    = (mode > MODE_DISARMED && mode != MODE_KILL) ? 1 : 0;
+  d["imu_ok"]   = imuOk  ? 1 : 0;
+  d["sonar_ok"] = sonarStale ? 0 : 1;
   if (sonarStale) d["warn"] = "SONAR_STALE";
   String s; serializeJson(d, s);
   ESP_SERIAL.println(s);

@@ -59,6 +59,7 @@
 #define DMS_TIMEOUT_MS 30000UL
 #define GPS_FWD_MS     200UL
 #define LED_PIN        2
+#define ADMIN_PASS     "SUDARSHAN2025"   // change to your preferred password
 
 static const IPAddress AP_IP (192, 168, 4, 1);
 static const IPAddress AP_GW (192, 168, 4, 1);
@@ -345,6 +346,8 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
   <button onclick="sc('PRESET',{id:1})">PST 1</button>
   <button onclick="sc('PRESET',{id:2})">PST 2</button>
   <button onclick="togOvr()">OVR&#9660;</button>
+  <button onclick="togMT()">MOT&#9660;</button>
+  <button onclick="togPF()">PF&#9660;</button>
 </div>
 
 <div id="ovr">
@@ -354,6 +357,45 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
     onchange="sc('OVERRIDE',{throttle:parseInt(this.value)})">
 </div>
 
+<div id="pfpanel" style="display:none;background:#111;border:1px solid #1e3030;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#00e5ff;letter-spacing:1px;margin-bottom:5px">PRE-FLIGHT CHECKLIST</div>
+  <div style="width:100%;font-size:.82em;margin-bottom:5px">
+    <div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #1a1a1a"><span class="lbl">IMU (MPU6050)</span><span id="pfImu" style="font-weight:bold;color:#444">---</span></div>
+    <div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #1a1a1a"><span class="lbl">SONAR / ALT</span><span id="pfSon" style="font-weight:bold;color:#444">---</span></div>
+    <div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #1a1a1a"><span class="lbl">BATTERY</span><span id="pfBat" style="font-weight:bold;color:#444">---</span></div>
+    <div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #1a1a1a"><span class="lbl">GPS / PHONE</span><span id="pfGps" style="font-weight:bold;color:#444">---</span></div>
+    <div style="display:flex;justify-content:space-between;padding:2px 0"><span class="lbl">MODE</span><span id="pfMod" style="font-weight:bold;color:#00e5ff">---</span></div>
+  </div>
+  <button id="gpsbtn2" style="width:100%;margin-bottom:6px;border-color:#00e5ff;color:#00e5ff;font-size:.75em" onclick="gpsStart()">&#9654; START PHONE GPS STREAMING</button>
+  <div style="border-top:1px solid #2a1000;padding-top:5px">
+    <div class="lbl" style="color:#ff9800;margin-bottom:3px">&#9888; ADMIN OVERRIDE — bypasses all pre-flight checks</div>
+    <div id="pfAuthBox">
+      <input id="pfPass" type="password" placeholder="Admin password"
+        style="width:100%;background:#0a0a0a;color:#e0e0e0;border:1px solid #333;border-radius:3px;padding:5px 6px;font-family:Consolas,monospace;font-size:.8em;margin-bottom:4px;-webkit-appearance:none">
+      <button style="width:100%;border-color:#ff9800;color:#ff9800" onclick="tryOverride()">UNLOCK FORCE ARM</button>
+    </div>
+    <button id="pfFarm" style="display:none;width:100%;border-color:#ff3b3b;color:#ff3b3b" onclick="sc('FORCE_ARM')">&#9889; FORCE ARM — ALL CHECKS BYPASSED</button>
+  </div>
+</div>
+<div id="ackbar" style="display:none;background:#1a1a00;border:1px solid #ffcc00;border-radius:3px;padding:4px 6px;margin-bottom:5px;font-size:.75em;color:#ffcc00"></div>
+<div id="mtest" style="display:none;background:#111;border:1px solid #332200;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#ff9800;margin-bottom:3px">&#9888; MOTOR TEST — REMOVE PROPS — DISARMED only</div>
+  <div class="btns" style="margin:3px 0">
+    <button id="mFL" onclick="mtSel('FL')">FL</button>
+    <button id="mFR" onclick="mtSel('FR')">FR</button>
+    <button id="mRL" onclick="mtSel('RL')">RL</button>
+    <button id="mRR" onclick="mtSel('RR')">RR</button>
+  </div>
+  <div class="lbl">THR <span id="mtthrv">1100</span> us</div>
+  <input id="mtthr" type="range" min="1050" max="1200" value="1100"
+    style="width:100%;accent-color:#00e5ff;margin:2px 0 5px"
+    oninput="document.getElementById('mtthrv').textContent=this.value">
+  <div class="lbl">DURATION <span id="mtdurv">1500</span> ms</div>
+  <input id="mtdur" type="range" min="500" max="2000" value="1500" step="100"
+    style="width:100%;accent-color:#ffcc00;margin:2px 0 5px"
+    oninput="document.getElementById('mtdurv').textContent=this.value">
+  <button style="width:100%;border-color:#ffcc00;color:#ffcc00" onclick="sendMT()">&#9654; RUN TEST</button>
+</div>
 <div class="row">
   <div class="card"><div class="lbl">LAT</div><div id="glat" class="val" style="color:#ccc">---</div></div>
   <div class="card"><div class="lbl">LON</div><div id="glon" class="val" style="color:#ccc">---</div></div>
@@ -434,8 +476,16 @@ function pollTelem(){
     document.getElementById('troll').textContent=f(d.roll)+'*';
     document.getElementById('tpitch').textContent=f(d.pitch)+'*';
     document.getElementById('tyaw').textContent=f(d.yaw)+'*';
-    document.getElementById('talt').textContent=f(d.alt,0);
-    document.getElementById('tbat').textContent=f(d.bat,2);
+    document.getElementById('talt').textContent=typeof d.alt_cm==='number'?d.alt_cm+'cm':'---';
+    document.getElementById('tbat').textContent=typeof d.bat_mv==='number'?(d.bat_mv/1000).toFixed(2)+'V':'---';
+    if(d.last_ack){try{var a=JSON.parse(d.last_ack);var ab=document.getElementById('ackbar');ab.style.display='block';ab.textContent='FC: '+a.ack+' '+a.status+(a.msg?' — '+a.msg:'');clearTimeout(window._ackTm);window._ackTm=setTimeout(function(){ab.style.display='none';},6000);}catch(e){}}
+    // pre-flight panel
+    var _G='#00e676',_R='#ff3b3b',_Y='#ffcc00',_U='#444';
+    if(typeof d.imu_ok==='number'){var ie=document.getElementById('pfImu');ie.textContent=d.imu_ok?'PASS':'FAIL';ie.style.color=d.imu_ok?_G:_R;}
+    if(typeof d.sonar_ok==='number'){var se=document.getElementById('pfSon');se.textContent=d.sonar_ok?'PASS':'STALE';se.style.color=d.sonar_ok?_G:_Y;}
+    if(typeof d.bat_mv==='number'&&d.bat_mv>0){var bv=d.bat_mv/1000,be=document.getElementById('pfBat');be.textContent=bv.toFixed(2)+'V'+(d.bat_mv<9900?' CRITICAL':d.bat_mv<10500?' LOW':'');be.style.color=d.bat_mv>10500?_G:d.bat_mv>9900?_Y:_R;}
+    var ge=document.getElementById('pfGps');if(d.gps_fix){ge.textContent='FIX ('+d.gps_sats+' sat)';ge.style.color=_G;}else{ge.textContent='NO FIX — press GPS button';ge.style.color=_U;}
+    var me=document.getElementById('pfMod');if(me)me.textContent=d.mode||'---';
     if(typeof d.roll==='number')drawAti(d.roll||0,d.pitch||0);
     if(d.gps_lat&&d.gps_lat!==0){
       document.getElementById('glat').textContent=d.gps_lat.toFixed(6);
@@ -449,6 +499,49 @@ function pollTelem(){
 }
 setInterval(pollTelem,1000);
 pollTelem();
+
+var mtMot='FL';
+function mtSel(m){
+  ['FL','FR','RL','RR'].forEach(function(x){
+    var b=document.getElementById('m'+x);
+    b.style.background=(x===m)?'#00e5ff':'';
+    b.style.color=(x===m)?'#000':'#00e5ff';
+  });
+  mtMot=m;
+}
+function togMT(){
+  var d=document.getElementById('mtest');
+  d.style.display=(d.style.display==='block')?'none':'block';
+}
+function sendMT(){
+  sc('MOTOR_TEST',{motor:mtMot,
+    throttle:parseInt(document.getElementById('mtthr').value),
+    duration_ms:parseInt(document.getElementById('mtdur').value)});
+}
+mtSel('FL');
+
+function togPF(){
+  var d=document.getElementById('pfpanel');
+  d.style.display=(d.style.display==='block')?'none':'block';
+}
+function tryOverride(){
+  var p=document.getElementById('pfPass').value;
+  if(!p)return;
+  fetch('/api/auth',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({pass:p})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){
+      document.getElementById('pfAuthBox').style.display='none';
+      document.getElementById('pfFarm').style.display='block';
+    } else {
+      var inp=document.getElementById('pfPass');
+      inp.style.borderColor='#ff3b3b';
+      inp.value='';
+      setTimeout(function(){inp.style.borderColor='#333';},1200);
+    }
+  }).catch(function(){});
+}
 
 function gpsStart(){
   var btn=document.getElementById('gpsbtn');
@@ -572,12 +665,23 @@ void handleStatus() {
   httpServer.send(200, "application/json", body);
 }
 
+void handleAuth() {
+  if (!httpServer.hasArg("plain")) { httpServer.send(400); return; }
+  StaticJsonDocument<64> req;
+  if (deserializeJson(req, httpServer.arg("plain")) != DeserializationError::Ok) {
+    httpServer.send(400); return;
+  }
+  bool ok = strcmp(req["pass"] | "", ADMIN_PASS) == 0;
+  httpServer.send(200, "application/json", ok ? "{\"ok\":1}" : "{\"ok\":0}");
+}
+
 void setupHTTP() {
   httpServer.on("/",          HTTP_GET,  handleRoot);
   httpServer.on("/api/telem", HTTP_GET,  handleWebTelem);
   httpServer.on("/api/cmd",   HTTP_POST, handleWebCmd);
   httpServer.on("/gps",       HTTP_POST, handleGpsPost);
   httpServer.on("/status",    HTTP_GET,  handleStatus);
+  httpServer.on("/api/auth",  HTTP_POST, handleAuth);
   httpServer.begin();
   Serial.println("[HTTP ] Web GCS at http://192.168.4.1/");
 }
