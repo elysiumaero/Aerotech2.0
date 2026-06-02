@@ -208,9 +208,10 @@ bool mpuInit() {
   delay(50);
 
   // Probe both I2C addresses — AD0 pin determines which one is active
-  for (uint8_t addr : {(uint8_t)0x68, (uint8_t)0x69}) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) { MPU = addr; break; }
+  const uint8_t addrs[2] = {0x68, 0x69};
+  for (uint8_t i = 0; i < 2; i++) {
+    Wire.beginTransmission(addrs[i]);
+    if (Wire.endTransmission() == 0) { MPU = addrs[i]; break; }
   }
 
   mpuWrite(0x6B, 0x00);  // wake
