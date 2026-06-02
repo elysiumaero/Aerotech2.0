@@ -203,20 +203,13 @@ class GpsHttpsServer:
         self._gps_cb = cb
 
     def start(self, log_fn=None):
-        ip = _detect_ap_ip()
-        if not ip:
-            if log_fn:
-                log_fn("GPS HTTPS: not on SUDARSHAN_AP — use GPS Server app or Chrome flag", WARN)
-            return None
-
         if not _ensure_tls_cert():
             if log_fn:
                 log_fn("GPS HTTPS: cert generation failed (need openssl or cryptography lib)", WARN)
             return None
 
-        self.url   = f"https://{ip}:{GPS_HTTPS_PORT}/"
-        _gps_cb    = lambda d: self._gps_cb(d) if self._gps_cb else None
-        _port      = GPS_HTTPS_PORT
+        _gps_cb = lambda d: self._gps_cb(d) if self._gps_cb else None
+        _port   = GPS_HTTPS_PORT
 
         class _H(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -261,12 +254,20 @@ class GpsHttpsServer:
                 pass  # Suppress HTTP access log
 
         try:
-            srv = HTTPServer((ip, _port), _H)
+            # Bind to 0.0.0.0 so the server starts regardless of whether the
+            # laptop is already connected to SUDARSHAN_AP.  The cert covers
+            # 192.168.4.1–5, so whatever IP the laptop gets on the AP subnet
+            # will be accepted by the phone's browser.
+            srv = HTTPServer(("0.0.0.0", _port), _H)
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(GPS_TLS_CERT, GPS_TLS_KEY)
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
             self._server = srv
             threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+            # Best-effort URL display — detect AP IP if already connected
+            ap_ip     = _detect_ap_ip() or "192.168.4.2"
+            self.url  = f"https://{ap_ip}:{_port}/"
             return self.url
         except Exception as e:
             if log_fn:
