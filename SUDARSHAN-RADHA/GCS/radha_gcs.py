@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import socket
 import threading
+import queue
 import json
 import time
 import math
@@ -765,6 +766,7 @@ class PreflightRunner:
         self._on_result  = on_result          # (test_id, status) -> None
         self._on_crit    = on_critical_pass   # (bool) -> None
         self._stop_flag  = False
+        self._ack_queue  = queue.Queue(maxsize=1)
 
     def run_all(self):
         self._stop_flag = False
@@ -871,27 +873,35 @@ class PreflightRunner:
                      "motor_rl": "RL", "motor_rr": "RR"}
         if tid in motor_map:
             motor = motor_map[tid]
+            # Drain any stale ACK before sending so a previous test's reply
+            # cannot be mistaken for this test's ACK.
+            try:
+                self._ack_queue.get_nowait()
+            except queue.Empty:
+                pass
             # Confirmation is shown by the UI — here we just send
             self._conn.send({"cmd":         "MOTOR_TEST",
                              "motor":       motor,
                              "throttle":    1100,
                              "duration_ms": 1500})
-            # Wait up to 5s for ACK
-            self._ack_event = threading.Event()
-            self._ack_result = None
-            deadline = time.time() + 5.0
-            while time.time() < deadline and self._ack_result is None:
-                time.sleep(0.1)
-            if self._ack_result == "OK":
-                return True, f"Motor {motor} spun OK"
-            return False, f"No ACK for motor {motor} (props OFF?)"
+            # Wait up to 5s for ACK via thread-safe queue
+            try:
+                ack_pkt = self._ack_queue.get(timeout=5.0)
+                if ack_pkt.get("status") == "OK":
+                    return True, f"Motor {motor} spun OK"
+                return False, f"Motor {motor} ACK status: {ack_pkt.get('status','ERR')}"
+            except queue.Empty:
+                return False, f"No ACK for motor {motor} (props OFF?)"
 
         return False, f"Unknown test: {tid}"
 
     def notify_ack(self, pkt):
         """Called by RADHAApp._on_ack to feed ACKs into running motor tests."""
         if pkt.get("ack") == "MOTOR_TEST":
-            self._ack_result = pkt.get("status", "ERR")
+            try:
+                self._ack_queue.put_nowait(pkt)
+            except queue.Full:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────
@@ -919,6 +929,7 @@ class RADHAApp:
         self._fix_lbl            = None
         self._bat_lbl            = None
         self._last_seq           = -1
+        self._seq_lock           = threading.Lock()
         self._latest_telem       = None
         self._telem_ts           = 0.0    # epoch of last REAL telemetry packet
         self._conn_time          = 0.0    # epoch when last connection was established
@@ -1402,13 +1413,17 @@ class RADHAApp:
             return
         if not self.conn.connected:
             self._log("Not connected", DANGER); return
-        spd  = float(self._nav_spd.get())
         brg  = self._bearing(self._nav_phone_lat or 0, self._nav_phone_lon or 0, la, lo)
         dist = self._haversine(self._nav_phone_lat or 0, self._nav_phone_lon or 0, la, lo)
-        self.conn.send({"cmd": "PRESET", "id": "NAV",
-                        "bear": round(brg, 1), "dist": round(dist, 0), "speed": spd})
+        # Build a proper single-segment PRESET that the FC understands
+        segment = {
+            "bearing": round(brg, 1),
+            "dist_m":  round(dist, 1),
+            "speed":   0.4
+        }
+        self.conn.send({"cmd": "PRESET", "segments": [segment]})
         dist_str = f"{dist:.0f}m" if dist < 1000 else f"{dist/1000:.2f}km"
-        self._log(f"NAV → BRG {brg:.1f}° | {dist_str} @ {spd}m/s", ACCENT)
+        self._log(f"NAV → BRG {brg:.1f}° | {dist_str}", ACCENT)
         self.dms.reset()
 
     def _nav_use_phone(self):
@@ -1833,15 +1848,25 @@ class RADHAApp:
             self._latest_gps = pkt
             self.root.after(0, self._apply_gps, pkt)
         else:
-            # Sequence gap detection
+            # Sequence gap detection (thread-safe; handles ESP32 reboot reset)
             seq = pkt.get("seq", -1)
-            if seq >= 0 and self._last_seq >= 0:
-                gap = (seq - self._last_seq) & 0xFFFF
-                if gap > 1:
-                    self.root.after(0, self._log,
-                                    f"⚠ TELEM GAP: missed {gap-1} packet(s)", WARN)
             if seq >= 0:
-                self._last_seq = seq
+                with self._seq_lock:
+                    if self._last_seq >= 0:
+                        gap = (seq - self._last_seq) & 0xFFFF
+                        if gap == 0:
+                            pass  # duplicate
+                        elif gap > 32768:
+                            # Sequence went backward — ESP32 likely rebooted; reset without warning
+                            self._last_seq = seq
+                        elif gap > 1:
+                            self.root.after(0, self._log,
+                                            f"[SEQ] gap: {gap-1} packet(s) lost", "#ff9800")
+                            self._last_seq = seq
+                        else:
+                            self._last_seq = seq
+                    else:
+                        self._last_seq = seq
             self._latest_telem    = pkt
             self._telem_ts        = time.time()
             self._no_telem_warned = True   # suppress the "no FC data" warning

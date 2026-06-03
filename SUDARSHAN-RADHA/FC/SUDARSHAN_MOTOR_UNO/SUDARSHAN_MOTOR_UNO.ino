@@ -51,6 +51,7 @@ Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA_ADDR);
 
 uint8_t buf[PKT_LEN];
 uint8_t idx = 0;
+unsigned long lastByteMs = 0;   // timestamp of last byte received (for packet timeout)
 
 // ─────────────────────────────────────────────────────────────
 //  ESC HELPERS
@@ -116,8 +117,14 @@ void setup() {
 //  LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
+  // Packet timeout: if mid-packet and no byte for 10ms, resync
+  if (idx > 0 && (millis() - lastByteMs) > 10) {
+    idx = 0;
+  }
+
   while (Serial.available()) {
     uint8_t b = (uint8_t)Serial.read();
+    lastByteMs = millis();
 
     if (idx == 0 && b != PKT_START) continue;  // hunt for start byte
 

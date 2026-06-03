@@ -91,7 +91,7 @@ String encryptLine(const String& plain) {
   int pad    = 16 - (plen % 16);
   int padded = plen + pad;
   uint8_t* buf = (uint8_t*)malloc(padded);
-  if (!buf) return plain;
+  if (!buf) return String();
   memcpy(buf, plain.c_str(), plen);
   memset(buf + plen, pad, pad);
 
@@ -110,7 +110,7 @@ String encryptLine(const String& plain) {
   // Prepend IV
   int total = 16 + padded;
   uint8_t* combined = (uint8_t*)malloc(total);
-  if (!combined) { free(buf); return plain; }
+  if (!combined) { free(buf); return String(); }
   memcpy(combined, iv, 16);
   memcpy(combined + 16, buf, padded);
   free(buf);
@@ -119,7 +119,7 @@ String encryptLine(const String& plain) {
   size_t b64len = 0;
   mbedtls_base64_encode(nullptr, 0, &b64len, combined, total);
   uint8_t* b64 = (uint8_t*)malloc(b64len + 1);
-  if (!b64) { free(combined); return plain; }
+  if (!b64) { free(combined); return String(); }
   mbedtls_base64_encode(b64, b64len, &b64len, combined, total);
   b64[b64len] = 0;
   free(combined);
@@ -943,11 +943,12 @@ String bufFC    = "";
 String bufGCS   = "";
 String bufPhone = "";
 
-unsigned long lastPing     = 0;
-unsigned long lastGpsFwd   = 0;
-bool          dmsArmed     = false;
-bool          dmsFired     = false;
-bool          phoneWasConn = false;
+unsigned long lastPing       = 0;
+unsigned long lastAnyByteMs  = 0;  // updated on any GCS byte received — guards DMS
+unsigned long lastGpsFwd     = 0;
+bool          dmsArmed       = false;
+bool          dmsFired       = false;
+bool          phoneWasConn   = false;
 
 String lastTelemJson = "";   // latest FC telemetry JSON — served to web GCS
 String lastAckJson   = "";   // latest FC ACK JSON — piggybacked on /api/telem
@@ -1195,6 +1196,7 @@ void readGCS() {
   if (!gcsClient || !gcsClient.connected()) return;
   while (gcsClient.available()) {
     char ch = (char)gcsClient.read();
+    lastAnyByteMs = millis();  // update on every received byte — DMS race guard
     if (ch == '\n') {
       bufGCS.trim();
       if (bufGCS.length() > 0) onGCSLine(decryptLine(bufGCS));
@@ -1317,6 +1319,8 @@ void onPhoneLine(const String& line) {
 void checkDMS() {
   if (!dmsArmed || dmsFired) return;
   if (!gcsClient || !gcsClient.connected()) return;
+  // Don't fire DMS within 200ms of receiving any byte — prevents race at boundary
+  if (millis() - lastAnyByteMs < 200) return;
   if (millis() - lastPing > DMS_TIMEOUT_MS) {
     dmsFired = true;
     Serial.println("[DMS  ] TIMEOUT — sending HOVER to FC");
