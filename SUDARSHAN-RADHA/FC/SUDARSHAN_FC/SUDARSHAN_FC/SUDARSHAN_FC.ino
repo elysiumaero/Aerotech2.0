@@ -505,6 +505,22 @@ void handleCmd(const String& line) {
     return;
   }
 
+  // ── CAL_ESC  (one-time ESC throttle-range calibration) ───────
+  // Standard procedure: full throttle → ESC double-beep → minimum
+  // throttle → ESC confirms. Run once per ESC, props OFF.
+  if (!strcmp(cmd, "CAL_ESC")) {
+    if (mode != MODE_DISARMED) { ack("CAL_ESC", false, "must be DISARMED"); return; }
+    DBG_SERIAL.println(F("[ESC ] CAL — sending 2000us (listen for double-beep)..."));
+    sendMotors(2000, 2000, 2000, 2000);
+    delay(3000);
+    DBG_SERIAL.println(F("[ESC ] CAL — sending 1000us (listen for confirm beeps)..."));
+    sendMotors(ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM);
+    delay(3000);
+    DBG_SERIAL.println(F("[ESC ] CAL done"));
+    ack("CAL_ESC", true, "ESCs calibrated — cycle power to confirm");
+    return;
+  }
+
   // ── PRESET ────────────────────────────────────────────────
   if (!strcmp(cmd, "PRESET")) {
     if (mode == MODE_DISARMED || mode == MODE_KILL) {

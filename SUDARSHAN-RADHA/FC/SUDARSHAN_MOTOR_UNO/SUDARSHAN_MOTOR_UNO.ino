@@ -98,7 +98,9 @@ void setup() {
   Serial.begin(115200);   // UART to Mega (also USB — disconnect wires when flashing)
 
   pca.begin();
-  pca.setOscillatorFrequency(27000000);  // actual osc ~27 MHz for accurate µs
+  // Do NOT call setOscillatorFrequency() — leave at the library default
+  // (25 MHz). Overriding to 27 MHz on a board that runs at 25 MHz shrinks
+  // every pulse by ~8%, turning 1000 µs into ~926 µs which ESCs reject.
   pca.setPWMFreq(50);                    // 50 Hz — standard ESC PWM
   delay(10);
 

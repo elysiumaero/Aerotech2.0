@@ -395,6 +395,11 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
     style="width:100%;accent-color:#ffcc00;margin:2px 0 5px"
     oninput="document.getElementById('mtdurv').textContent=this.value">
   <button style="width:100%;border-color:#ffcc00;color:#ffcc00" onclick="sendMT()">&#9654; RUN TEST</button>
+  <div style="border-top:1px solid #222;margin-top:6px;padding-top:5px">
+    <div class="lbl" style="color:#ff9800;margin-bottom:3px">&#9888; ESC CALIBRATION — props OFF — do once per ESC</div>
+    <div class="lbl" style="margin-bottom:3px">Sends 2000µs → wait for double-beep → 1000µs → confirm beeps</div>
+    <button style="width:100%;border-color:#ff9800;color:#ff9800" onclick="calEsc()">&#9889; CALIBRATE ALL ESCs</button>
+  </div>
 </div>
 <div class="row">
   <div class="card"><div class="lbl">LAT</div><div id="glat" class="val" style="color:#ccc">---</div></div>
@@ -518,6 +523,7 @@ function sendMT(){
     throttle:parseInt(document.getElementById('mtthr').value),
     duration_ms:parseInt(document.getElementById('mtdur').value)});
 }
+function calEsc(){sc('CAL_ESC');}
 mtSel('FL');
 
 function togPF(){
