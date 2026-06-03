@@ -395,6 +395,19 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
     style="width:100%;accent-color:#ffcc00;margin:2px 0 5px"
     oninput="document.getElementById('mtdurv').textContent=this.value">
   <button style="width:100%;border-color:#ffcc00;color:#ffcc00" onclick="sendMT()">&#9654; RUN TEST</button>
+  <div style="border-top:1px solid #1a2a1a;margin-top:6px;padding-top:5px">
+    <div class="lbl" style="color:#00e5ff;margin-bottom:2px">MOTOR IDENTIFICATION WIZARD</div>
+    <div class="lbl" style="margin-bottom:4px">Spins each channel one at a time. Tell the GCS which physical motor moved — it will save the correct wiring map.</div>
+    <div id="midStatus" style="font-size:.78em;color:#ffcc00;min-height:1.3em;margin:3px 0"></div>
+    <div id="midPickBtns" class="btns" style="display:none;margin:4px 0">
+      <button onclick="midPick('FL')">FL</button>
+      <button onclick="midPick('FR')">FR</button>
+      <button onclick="midPick('RL')">RL</button>
+      <button onclick="midPick('RR')">RR</button>
+    </div>
+    <div id="midMapTxt" style="font-size:.75em;color:#00e676;min-height:1em;margin:3px 0"></div>
+    <button id="midStartBtn" style="width:100%;border-color:#00e5ff;color:#00e5ff" onclick="midStart()">&#9654; START MOTOR IDENTIFICATION</button>
+  </div>
   <div style="border-top:1px solid #222;margin-top:6px;padding-top:5px">
     <div class="lbl" style="color:#ff9800;margin-bottom:3px">&#9888; ESC CALIBRATION — props OFF — do once per ESC</div>
     <div class="lbl" style="margin-bottom:3px">Sends 2000µs → wait for double-beep → 1000µs → confirm beeps</div>
@@ -525,6 +538,45 @@ function sendMT(){
 }
 function calEsc(){sc('CAL_ESC');}
 mtSel('FL');
+
+var midCh=0,midMapR={},midUsed=[];
+function midStart(){
+  midCh=0;midMapR={};midUsed=[];
+  document.getElementById('midStartBtn').style.display='none';
+  document.getElementById('midMapTxt').textContent='';
+  document.getElementById('midPickBtns').style.display='none';
+  midDoChannel();
+}
+function midDoChannel(){
+  if(midCh>3){
+    sc('SET_MOTOR_MAP',midMapR);
+    var t='Map saved: ';
+    ['fl','fr','rl','rr'].forEach(function(k){t+=k.toUpperCase()+'->CH'+midMapR[k]+' ';});
+    document.getElementById('midStatus').textContent=t;
+    document.getElementById('midPickBtns').style.display='none';
+    var sb=document.getElementById('midStartBtn');
+    sb.style.display='block';sb.textContent='&#9654; RE-RUN IDENTIFICATION';
+    return;
+  }
+  document.getElementById('midStatus').textContent='Spinning CH'+midCh+'... which motor just moved?';
+  fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:'SPIN_CH',ch:midCh,thr:1100,dur:2000})}).catch(function(){});
+  setTimeout(function(){document.getElementById('midPickBtns').style.display='flex';},400);
+}
+function midPick(m){
+  var mk=m.toLowerCase();
+  if(midUsed.indexOf(mk)>=0){
+    document.getElementById('midStatus').textContent=m+' already assigned — pick another!';
+    return;
+  }
+  document.getElementById('midPickBtns').style.display='none';
+  midMapR[mk]=midCh;midUsed.push(mk);
+  var t='';['fl','fr','rl','rr'].forEach(function(k){if(midMapR[k]!==undefined)t+=k.toUpperCase()+'->CH'+midMapR[k]+'  ';});
+  document.getElementById('midMapTxt').textContent=t;
+  midCh++;
+  document.getElementById('midStatus').textContent='Got it. Next channel in 2.5s...';
+  setTimeout(midDoChannel,2500);
+}
 
 function togPF(){
   var d=document.getElementById('pfpanel');

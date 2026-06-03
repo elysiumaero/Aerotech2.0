@@ -134,6 +134,11 @@ typedef enum { SEG_TURN=0, SEG_FLY, SEG_PAUSE } SegPhase;
 
 // (ESC output handled by Uno motor driver — see SUDARSHAN_MOTOR_UNO)
 
+// Motor-channel mapping set by the GCS motor-ID wizard.
+// motorMap[pos] = PCA9685 channel.  pos: 0=FL 1=FR 2=RL 3=RR
+// Default is identity (channel N = motor N) until wizard runs.
+uint8_t motorMap[4] = {0, 1, 2, 3};
+
 // PIDs
 PID pidRoll, pidPitch, pidYaw, pidAlt;
 
@@ -314,8 +319,19 @@ void sendMotors(uint16_t fl, uint16_t fr, uint16_t rl, uint16_t rr) {
   UNO_SERIAL.write(pkt, 10);
 }
 
+// Route FL/FR/RL/RR values to the correct PCA9685 channels
+// using the mapping saved by the GCS motor-ID wizard.
+void sendMotorsPos(uint16_t fl, uint16_t fr, uint16_t rl, uint16_t rr) {
+  uint16_t v[4] = {ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM};
+  v[motorMap[0]] = fl;
+  v[motorMap[1]] = fr;
+  v[motorMap[2]] = rl;
+  v[motorMap[3]] = rr;
+  sendMotors(v[0], v[1], v[2], v[3]);
+}
+
 void escsWrite(int fl, int fr, int rl, int rr) {
-  sendMotors(
+  sendMotorsPos(
     (uint16_t)constrain(fl, ESC_MIN, ESC_MAX),
     (uint16_t)constrain(fr, ESC_MIN, ESC_MAX),
     (uint16_t)constrain(rl, ESC_MIN, ESC_MAX),
@@ -502,6 +518,38 @@ void handleCmd(const String& line) {
     delay(dur);        // blocking OK — drone is DISARMED on bench
     escsKill();
     ack("MOTOR_TEST", true, motor);
+    return;
+  }
+
+  // ── SPIN_CH  {"cmd":"SPIN_CH","ch":0,"thr":1100,"dur":2000}  ─
+  // Spin a raw PCA9685 channel by index — used by motor-ID wizard.
+  // Bypasses motorMap intentionally (wizard builds the map).
+  if (!strcmp(cmd, "SPIN_CH")) {
+    if (mode != MODE_DISARMED) { ack("SPIN_CH", false, "must be DISARMED"); return; }
+    int ch  = constrain(doc["ch"]  | 0, 0, 3);
+    int thr = constrain(doc["thr"] | 1100, ESC_MIN, 1200);
+    unsigned long dur = constrain((unsigned long)(doc["dur"] | 2000), 500UL, 3000UL);
+    uint16_t v[4] = {ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM};
+    v[ch] = (uint16_t)thr;
+    escsKill(); delay(300);
+    sendMotors(v[0], v[1], v[2], v[3]);
+    delay(dur);
+    escsKill();
+    ack("SPIN_CH", true);
+    return;
+  }
+
+  // ── SET_MOTOR_MAP  {"cmd":"SET_MOTOR_MAP","fl":2,"fr":0,"rl":3,"rr":1}
+  // Save channel-to-motor mapping from the GCS motor-ID wizard.
+  if (!strcmp(cmd, "SET_MOTOR_MAP")) {
+    motorMap[0] = constrain(doc["fl"] | 0, 0, 3);
+    motorMap[1] = constrain(doc["fr"] | 1, 0, 3);
+    motorMap[2] = constrain(doc["rl"] | 2, 0, 3);
+    motorMap[3] = constrain(doc["rr"] | 3, 0, 3);
+    char mbuf[48];
+    snprintf(mbuf, sizeof(mbuf), "FL=CH%d FR=CH%d RL=CH%d RR=CH%d",
+             motorMap[0], motorMap[1], motorMap[2], motorMap[3]);
+    ack("SET_MOTOR_MAP", true, mbuf);
     return;
   }
 
