@@ -312,6 +312,10 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
         font-family:Consolas,monospace;font-size:.78em;cursor:pointer;
         -webkit-tap-highlight-color:transparent}
 #gpsbtn.on{color:#00e5ff;border-color:#00e5ff}
+.tstep{padding:2px 0;border-bottom:1px solid #1a1a1a;color:#555;transition:color .3s}
+input[type=number]{width:100%;background:#0a0a0a;color:#e0e0e0;border:1px solid #333;
+  border-radius:3px;padding:4px 5px;font-family:Consolas,monospace;font-size:.78em;
+  -webkit-appearance:none;appearance:none}
 </style>
 </head>
 <body>
@@ -348,6 +352,10 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
   <button onclick="togOvr()">OVR&#9660;</button>
   <button onclick="togMT()">MOT&#9660;</button>
   <button onclick="togPF()">PF&#9660;</button>
+</div>
+<div class="btns">
+  <button onclick="togNav()">NAV&#9660;</button>
+  <button onclick="togTrn()">GUIDE&#9660;</button>
 </div>
 
 <div id="ovr">
@@ -414,6 +422,55 @@ canvas{display:block;margin:0 auto 5px;border-radius:50%;border:1px solid #1e1e1
     <button style="width:100%;border-color:#ff9800;color:#ff9800" onclick="calEsc()">&#9889; CALIBRATE ALL ESCs</button>
   </div>
 </div>
+<div id="navpanel" style="display:none;background:#111;border:1px solid #0d2020;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#00e5ff;letter-spacing:1px;margin-bottom:5px">GPS NAVIGATION</div>
+  <svg id="navSvg" width="110" height="110" style="display:block;margin:0 auto 5px">
+    <circle cx="55" cy="55" r="52" fill="#0d0d0d" stroke="#222" stroke-width="1"/>
+    <text x="55" y="13" fill="#00e5ff" font-size="9" text-anchor="middle" font-family="Consolas,monospace">N</text>
+    <text x="55" y="105" fill="#555" font-size="9" text-anchor="middle" font-family="Consolas,monospace">S</text>
+    <text x="8" y="59" fill="#555" font-size="9" text-anchor="middle" font-family="Consolas,monospace">W</text>
+    <text x="103" y="59" fill="#555" font-size="9" text-anchor="middle" font-family="Consolas,monospace">E</text>
+    <line id="navBrgLine" x1="55" y1="55" x2="55" y2="8" stroke="#00e676" stroke-width="2" stroke-dasharray="5,3" opacity="0"/>
+    <line id="navHdgLine" x1="55" y1="55" x2="55" y2="8" stroke="#ff3b3b" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="55" cy="55" r="3" fill="#e0e0e0"/>
+  </svg>
+  <div style="display:flex;gap:4px;margin-bottom:4px">
+    <div style="flex:1"><div class="lbl">TARGET LAT</div>
+      <input id="navLat" type="number" step="0.000001" placeholder="0.000000"></div>
+    <div style="flex:1"><div class="lbl">TARGET LON</div>
+      <input id="navLon" type="number" step="0.000001" placeholder="0.000000"></div>
+  </div>
+  <button style="width:100%;border-color:#00e5ff;color:#00e5ff;margin-bottom:3px;font-size:.75em" onclick="navUsePhone()">&#9654; USE PHONE GPS AS TARGET</button>
+  <div id="navInfo" style="font-size:.78em;color:#ffcc00;min-height:1.3em;margin:3px 0;text-align:center">-- Set target coordinates --</div>
+  <div style="margin-bottom:4px">
+    <div class="lbl">SPEED <span id="navSpdV">2</span> m/s</div>
+    <input type="range" min="1" max="8" value="2" style="width:100%;accent-color:#00e5ff" oninput="document.getElementById('navSpdV').textContent=this.value" id="navSpd">
+  </div>
+  <div class="btns">
+    <button style="border-color:#00e676;color:#00e676;flex:2" onclick="navFlyTo()">&#10148; FLY TO</button>
+    <button style="border-color:#ffcc00;color:#ffcc00;flex:1" onclick="navCalc()">CALC</button>
+    <button style="border-color:#ff9800;color:#ff9800;flex:1" onclick="sc('PRESET',{id:'RTL'})">RTL</button>
+  </div>
+</div>
+
+<div id="trnpanel" style="display:none;background:#111;border:1px solid #142010;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#00e676;letter-spacing:1px;margin-bottom:5px">TRAINING GUIDE</div>
+  <div class="lbl" style="margin-bottom:3px">LIVE PRE-FLIGHT CHECKLIST</div>
+  <div id="trnStep0" class="tstep">&#9744; Power on — waiting for FC connection</div>
+  <div id="trnStep1" class="tstep">&#9744; IMU calibrated and healthy</div>
+  <div id="trnStep2" class="tstep">&#9744; Sonar active and reading altitude</div>
+  <div id="trnStep3" class="tstep">&#9744; Battery above 10.5V</div>
+  <div id="trnStep4" class="tstep">&#9744; Phone GPS fix obtained</div>
+  <div id="trnStep5" class="tstep">&#9744; Drone stable — roll/pitch within &#177;5&#176;</div>
+  <div id="trnStep6" class="tstep" style="border-bottom:none">&#9744; ARM the drone</div>
+  <div style="border-top:1px solid #1a2a1a;margin-top:5px;padding-top:5px">
+    <div class="lbl" style="color:#ff9800;margin-bottom:2px">SIMULATION LOCK</div>
+    <div class="lbl" style="margin-bottom:3px">Blocks ARM — safe for UI familiarization and training.</div>
+    <button id="simBtn" style="width:100%;border-color:#00e676;color:#00e676;margin-bottom:3px" onclick="togSim()">&#9632; ENABLE SIM LOCK</button>
+    <div id="simInd" style="display:none;text-align:center;color:#ff9800;font-size:.78em;padding:3px 0;letter-spacing:1px">&#9888; SIM MODE — ARM BLOCKED</div>
+  </div>
+</div>
+
 <div class="row">
   <div class="card"><div class="lbl">LAT</div><div id="glat" class="val" style="color:#ccc">---</div></div>
   <div class="card"><div class="lbl">LON</div><div id="glon" class="val" style="color:#ccc">---</div></div>
@@ -455,6 +512,12 @@ function setDms(v){
 setInterval(function(){if(dV>0)setDms(dV-1);},1000);
 
 function sc(cmd,extra){
+  if(simLock&&cmd==='ARM'){
+    var ab=document.getElementById('ackbar');
+    ab.style.display='block';ab.textContent='&#9888; SIM MODE — ARM BLOCKED';
+    clearTimeout(window._ackTm);window._ackTm=setTimeout(function(){ab.style.display='none';},3000);
+    return;
+  }
   setDms(30);
   var b={cmd:cmd};
   if(extra){for(var k in extra)b[k]=extra[k];}
@@ -509,7 +572,11 @@ function pollTelem(){
       document.getElementById('glat').textContent=d.gps_lat.toFixed(6);
       document.getElementById('glon').textContent=d.gps_lon.toFixed(6);
       document.getElementById('gfix').textContent=(d.gps_fix?'FIX':'---')+'/'+(d.gps_sats||0);
+      navPhoneLat=d.gps_lat;navPhoneLon=d.gps_lon;
     }
+    window._lastHdg=typeof d.yaw==='number'?d.yaw:0;
+    navUpdateSvg(window._lastHdg,null);
+    navUpdateTrn(d);
   }).catch(function(){
     var lv=document.getElementById('live');
     lv.textContent='● OFFLINE';lv.style.color='#444';
@@ -582,6 +649,88 @@ function togPF(){
   var d=document.getElementById('pfpanel');
   d.style.display=(d.style.display==='block')?'none':'block';
 }
+
+// ── NAV panel ──
+var navPhoneLat=0,navPhoneLon=0,simLock=false;
+function haversine(a,b,c,d){
+  var R=6371000,dL=(c-a)*Math.PI/180,dN=(d-b)*Math.PI/180;
+  var s=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dN/2)*Math.sin(dN/2);
+  return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));
+}
+function calcBrg(a,b,c,d){
+  var dN=(d-b)*Math.PI/180;
+  var y=Math.sin(dN)*Math.cos(c*Math.PI/180);
+  var x=Math.cos(a*Math.PI/180)*Math.sin(c*Math.PI/180)-Math.sin(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.cos(dN);
+  return(Math.atan2(y,x)*180/Math.PI+360)%360;
+}
+function navUpdateSvg(hdg,brg){
+  var r=46,cx=55,cy=55;
+  function pt(a){return{x:cx+r*Math.sin(a*Math.PI/180),y:cy-r*Math.cos(a*Math.PI/180)};}
+  var h=document.getElementById('navHdgLine'),p=pt(hdg||0);
+  h.setAttribute('x2',p.x);h.setAttribute('y2',p.y);
+  var bl=document.getElementById('navBrgLine');
+  if(brg!==null&&brg!==undefined){var pb=pt(brg);bl.setAttribute('x2',pb.x);bl.setAttribute('y2',pb.y);bl.setAttribute('opacity','1');}
+  else{bl.setAttribute('opacity','0');}
+}
+function navCalc(){
+  var la=parseFloat(document.getElementById('navLat').value);
+  var lo=parseFloat(document.getElementById('navLon').value);
+  if(isNaN(la)||isNaN(lo)){document.getElementById('navInfo').textContent='Enter valid coordinates';return;}
+  var dist=haversine(navPhoneLat||0,navPhoneLon||0,la,lo);
+  var brg=calcBrg(navPhoneLat||0,navPhoneLon||0,la,lo);
+  navUpdateSvg(window._lastHdg||0,brg);
+  document.getElementById('navInfo').textContent='BRG: '+brg.toFixed(1)+'&#176; | DIST: '+(dist<1000?dist.toFixed(0)+'m':(dist/1000).toFixed(2)+'km');
+}
+function navUsePhone(){
+  if(!navPhoneLat){document.getElementById('navInfo').textContent='No phone GPS fix yet — press START GPS';return;}
+  document.getElementById('navLat').value=navPhoneLat.toFixed(6);
+  document.getElementById('navLon').value=navPhoneLon.toFixed(6);
+  document.getElementById('navInfo').textContent='Target set to current phone position';
+}
+function navFlyTo(){
+  var la=parseFloat(document.getElementById('navLat').value);
+  var lo=parseFloat(document.getElementById('navLon').value);
+  if(isNaN(la)||isNaN(lo)){document.getElementById('navInfo').textContent='Set a target first';return;}
+  var spd=parseFloat(document.getElementById('navSpd').value)||2;
+  var brg=calcBrg(navPhoneLat||0,navPhoneLon||0,la,lo);
+  var dist=haversine(navPhoneLat||0,navPhoneLon||0,la,lo);
+  sc('PRESET',{id:'NAV',bear:parseFloat(brg.toFixed(1)),dist:parseFloat(dist.toFixed(0)),speed:spd});
+  document.getElementById('navInfo').textContent='Sent: BRG '+brg.toFixed(1)+'&#176; | '+dist.toFixed(0)+'m @ '+spd+'m/s';
+}
+function togNav(){
+  var d=document.getElementById('navpanel');
+  d.style.display=(d.style.display==='block')?'none':'block';
+}
+
+// ── Training / Guide panel ──
+function togSim(){
+  simLock=!simLock;
+  var b=document.getElementById('simBtn');
+  var i=document.getElementById('simInd');
+  if(simLock){b.textContent='&#9658; DISABLE SIM LOCK';b.style.borderColor='#ff9800';b.style.color='#ff9800';i.style.display='block';}
+  else{b.textContent='&#9632; ENABLE SIM LOCK';b.style.borderColor='#00e676';b.style.color='#00e676';i.style.display='none';}
+}
+function togTrn(){
+  var d=document.getElementById('trnpanel');
+  d.style.display=(d.style.display==='block')?'none':'block';
+}
+function navUpdateTrn(d){
+  var steps=[
+    ['trnStep0',d.mode&&d.mode!=='DISCONNECTED'],
+    ['trnStep1',d.imu_ok===1],
+    ['trnStep2',d.sonar_ok===1],
+    ['trnStep3',!!(d.bat_mv&&d.bat_mv>=10500)],
+    ['trnStep4',!!(d.gps_fix&&d.gps_fix>0)],
+    ['trnStep5',typeof d.roll==='number'&&Math.abs(d.roll)<5&&typeof d.pitch==='number'&&Math.abs(d.pitch)<5],
+    ['trnStep6',d.armed===1]
+  ];
+  steps.forEach(function(s){
+    var e=document.getElementById(s[0]);if(!e)return;
+    var txt=e.textContent.slice(2);
+    e.textContent=(s[1]?'☑ ':'❄ ')+txt;
+    e.style.color=s[1]?'#00e676':'#555';
+  });
+}
 function tryOverride(){
   var p=document.getElementById('pfPass').value;
   if(!p)return;
@@ -612,6 +761,7 @@ function gpsStart(){
     var c=p.coords;
     btn.textContent='● GPS STREAMING ('+c.accuracy.toFixed(0)+'m)';
     btn.classList.add('on');
+    navPhoneLat=c.latitude;navPhoneLon=c.longitude;
     fetch('/gps',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({lat:c.latitude,lon:c.longitude,
