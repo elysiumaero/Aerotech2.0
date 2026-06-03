@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import socket
 import threading
+import queue
 import json
 import time
 import math
@@ -765,6 +766,7 @@ class PreflightRunner:
         self._on_result  = on_result          # (test_id, status) -> None
         self._on_crit    = on_critical_pass   # (bool) -> None
         self._stop_flag  = False
+        self._ack_queue  = queue.Queue(maxsize=1)
 
     def run_all(self):
         self._stop_flag = False
@@ -871,27 +873,35 @@ class PreflightRunner:
                      "motor_rl": "RL", "motor_rr": "RR"}
         if tid in motor_map:
             motor = motor_map[tid]
+            # Drain any stale ACK before sending so a previous test's reply
+            # cannot be mistaken for this test's ACK.
+            try:
+                self._ack_queue.get_nowait()
+            except queue.Empty:
+                pass
             # Confirmation is shown by the UI — here we just send
             self._conn.send({"cmd":         "MOTOR_TEST",
                              "motor":       motor,
                              "throttle":    1100,
                              "duration_ms": 1500})
-            # Wait up to 5s for ACK
-            self._ack_event = threading.Event()
-            self._ack_result = None
-            deadline = time.time() + 5.0
-            while time.time() < deadline and self._ack_result is None:
-                time.sleep(0.1)
-            if self._ack_result == "OK":
-                return True, f"Motor {motor} spun OK"
-            return False, f"No ACK for motor {motor} (props OFF?)"
+            # Wait up to 5s for ACK via thread-safe queue
+            try:
+                ack_pkt = self._ack_queue.get(timeout=5.0)
+                if ack_pkt.get("status") == "OK":
+                    return True, f"Motor {motor} spun OK"
+                return False, f"Motor {motor} ACK status: {ack_pkt.get('status','ERR')}"
+            except queue.Empty:
+                return False, f"No ACK for motor {motor} (props OFF?)"
 
         return False, f"Unknown test: {tid}"
 
     def notify_ack(self, pkt):
         """Called by RADHAApp._on_ack to feed ACKs into running motor tests."""
         if pkt.get("ack") == "MOTOR_TEST":
-            self._ack_result = pkt.get("status", "ERR")
+            try:
+                self._ack_queue.put_nowait(pkt)
+            except queue.Full:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────
@@ -909,9 +919,17 @@ class RADHAApp:
         self._armed              = False
         self._preset_segs        = []
         self._gps_vars           = {}
+        self._nav_hdg            = 0.0
+        self._nav_brg            = None
+        self._nav_phone_lat      = 0.0
+        self._nav_phone_lon      = 0.0
+        self._sim_lock           = False
+        self._guide_labels       = {}
+        self._alt_target_var     = None
         self._fix_lbl            = None
         self._bat_lbl            = None
         self._last_seq           = -1
+        self._seq_lock           = threading.Lock()
         self._latest_telem       = None
         self._telem_ts           = 0.0    # epoch of last REAL telemetry packet
         self._conn_time          = 0.0    # epoch when last connection was established
@@ -1029,7 +1047,7 @@ class RADHAApp:
         sb.pack_propagate(False)
 
         self._tab_btns = {}
-        for name in ("FLIGHT", "PRESET", "PREFLIGHT"):
+        for name in ("FLIGHT", "PRESET", "PREFLIGHT", "NAV", "GUIDE"):
             b = tk.Button(sb, text=name, bg=SIDEBAR, fg=SUBTEXT,
                           font=F_BODY, relief="flat", cursor="hand2",
                           activebackground=PANEL, activeforeground=ACCENT,
@@ -1061,6 +1079,8 @@ class RADHAApp:
             "FLIGHT":    self._build_flight_panel(self._content),
             "PRESET":    self._build_preset_panel(self._content),
             "PREFLIGHT": self._build_preflight_panel(self._content),
+            "NAV":       self._build_nav_panel(self._content),
+            "GUIDE":     self._build_guide_panel(self._content),
         }
 
     def _switch_tab(self, name):
@@ -1146,6 +1166,20 @@ class RADHAApp:
         tk.Button(rc, text="★  INAUGURATE", bg=GOLD, fg="#000",
                   font=F_HEAD, relief="flat", cursor="hand2",
                   command=self._inauguration).pack(fill="x", padx=12, pady=3, ipady=10)
+
+        tk.Frame(rc, bg=PANEL, height=6).pack()
+        tk.Label(rc, text="ALTITUDE SETPOINT", bg=PANEL, fg=SUBTEXT,
+                 font=F_SMALL).pack(anchor="w", padx=12)
+        alt_frm = tk.Frame(rc, bg=PANEL)
+        alt_frm.pack(fill="x", padx=12, pady=4)
+        self._alt_target_var = tk.IntVar(value=100)
+        tk.Scale(alt_frm, from_=30, to=500, orient="horizontal",
+                 variable=self._alt_target_var, bg=PANEL, fg=ACCENT,
+                 troughcolor="#1a1a1a", highlightthickness=0,
+                 font=F_SMALL, sliderlength=16, label="cm").pack(fill="x")
+        tk.Button(rc, text="SET ALTITUDE", bg=ACCENT, fg=BG, font=F_BODY,
+                  relief="flat", cursor="hand2",
+                  command=self._set_alt).pack(fill="x", padx=12, pady=2, ipady=6)
 
         # Preflight interlock notice
         self._pf_notice = tk.Label(rc, text="⚠ Run PREFLIGHT before ARM",
@@ -1238,7 +1272,252 @@ class RADHAApp:
         self._pcanvas = tk.Canvas(rf, bg="#080808", highlightthickness=0)
         self._pcanvas.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self._pcanvas.bind("<Configure>", lambda e: self._draw_preview())
+        self._click_mode = False
+        self._click_pts  = []   # list of (x,y) canvas points for click-path
+        self._pcanvas.bind("<Button-1>", self._canvas_click)
+
+        self._click_btn = tk.Button(rf, text="CLICK MODE: OFF",
+                                     bg=PANEL, fg=SUBTEXT, font=F_SMALL,
+                                     relief="flat", cursor="hand2",
+                                     command=self._toggle_click_mode)
+        self._click_btn.pack(fill="x", padx=12, pady=(0, 6), ipady=4)
         return f
+
+    # ── NAV PANEL ────────────────────────────────────────────
+
+    def _build_nav_panel(self, parent):
+        f = tk.Frame(parent, bg=BG)
+
+        lf = tk.Frame(f, bg=PANEL)
+        lf.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        tk.Label(lf, text="GPS NAVIGATION", bg=PANEL, fg=ACCENT,
+                 font=F_HEAD).pack(anchor="w", padx=12, pady=(10, 4))
+
+        # Compass canvas
+        self._nav_canvas = tk.Canvas(lf, bg="#111", width=190, height=190,
+                                     highlightthickness=0)
+        self._nav_canvas.pack(padx=12, pady=4)
+        self._draw_nav_compass(0.0, None)
+
+        # Target coordinates
+        crd = tk.Frame(lf, bg=PANEL)
+        crd.pack(fill="x", padx=12, pady=4)
+        tk.Label(crd, text="TARGET LAT", bg=PANEL, fg=SUBTEXT,
+                 font=F_SMALL, width=12, anchor="w").grid(row=0, column=0, pady=3)
+        self._nav_lat = tk.Entry(crd, bg="#0a0a0a", fg=TEXT, font=F_BODY,
+                                  insertbackground=TEXT, relief="flat", width=16)
+        self._nav_lat.grid(row=0, column=1, sticky="w", padx=4, pady=3)
+        tk.Label(crd, text="TARGET LON", bg=PANEL, fg=SUBTEXT,
+                 font=F_SMALL, width=12, anchor="w").grid(row=1, column=0, pady=3)
+        self._nav_lon = tk.Entry(crd, bg="#0a0a0a", fg=TEXT, font=F_BODY,
+                                  insertbackground=TEXT, relief="flat", width=16)
+        self._nav_lon.grid(row=1, column=1, sticky="w", padx=4, pady=3)
+
+        # Speed + info
+        spd_frm = tk.Frame(lf, bg=PANEL)
+        spd_frm.pack(fill="x", padx=12, pady=2)
+        tk.Label(spd_frm, text="SPEED m/s", bg=PANEL, fg=SUBTEXT,
+                 font=F_SMALL).pack(side="left")
+        self._nav_spd = tk.Scale(spd_frm, from_=1, to=8, orient="horizontal",
+                                  bg=PANEL, fg=ACCENT, troughcolor="#1a1a1a",
+                                  highlightthickness=0, font=F_SMALL,
+                                  sliderlength=14, length=100)
+        self._nav_spd.set(2)
+        self._nav_spd.pack(side="left", padx=8)
+
+        self._nav_info = tk.Label(lf, text="-- Set target coordinates --",
+                                   bg=PANEL, fg=WARN, font=F_SMALL, wraplength=260)
+        self._nav_info.pack(anchor="w", padx=12, pady=4)
+
+        # Buttons
+        btn_frm = tk.Frame(lf, bg=PANEL)
+        btn_frm.pack(fill="x", padx=12, pady=6)
+        tk.Button(btn_frm, text="CALC", bg=PANEL, fg=ACCENT, font=F_BODY,
+                  relief="flat", cursor="hand2",
+                  command=self._nav_calc).pack(side="left", ipady=6, ipadx=12)
+        tk.Button(btn_frm, text="▶ FLY TO", bg=SUCCESS, fg=BG, font=F_HEAD,
+                  relief="flat", cursor="hand2",
+                  command=self._nav_fly_to).pack(side="left", padx=8, ipady=6, ipadx=12)
+        tk.Button(btn_frm, text="RTL", bg=WARN, fg=BG, font=F_BODY,
+                  relief="flat", cursor="hand2",
+                  command=lambda: self._send_cmd_raw({"cmd":"PRESET","id":"RTL"})).pack(
+              side="left", ipady=6, ipadx=10)
+        tk.Button(btn_frm, text="USE PHONE GPS", bg=PANEL, fg=SUBTEXT,
+                  font=F_SMALL, relief="flat", cursor="hand2",
+                  command=self._nav_use_phone).pack(side="right", ipady=4, ipadx=8)
+
+        return f
+
+    def _draw_nav_compass(self, hdg_deg, brg_deg):
+        c = self._nav_canvas
+        c.delete("all")
+        cx, cy, r = 95, 95, 82
+        c.create_oval(cx-r, cy-r, cx+r, cy+r, fill="#0d0d0d", outline=SUBTEXT, width=1)
+        for lbl, ang in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+            rad = math.radians(ang)
+            tx = cx + (r-10) * math.sin(rad)
+            ty = cy - (r-10) * math.cos(rad)
+            col = ACCENT if lbl == "N" else SUBTEXT
+            c.create_text(tx, ty, text=lbl, fill=col, font=("Consolas", 8))
+        # Heading line (red)
+        rad = math.radians(hdg_deg)
+        hx = cx + (r-8) * math.sin(rad)
+        hy = cy - (r-8) * math.cos(rad)
+        c.create_line(cx, cy, hx, hy, fill=DANGER, width=2.5)
+        # Bearing line (green dashed)
+        if brg_deg is not None:
+            rad = math.radians(brg_deg)
+            bx = cx + (r-8) * math.sin(rad)
+            by = cy - (r-8) * math.cos(rad)
+            c.create_line(cx, cy, bx, by, fill=SUCCESS, width=2, dash=(6, 3))
+        c.create_oval(cx-4, cy-4, cx+4, cy+4, fill="#e0e0e0", outline="")
+
+    @staticmethod
+    def _haversine(lat1, lon1, lat2, lon2):
+        R = 6371000
+        dL = math.radians(lat2 - lat1)
+        dN = math.radians(lon2 - lon1)
+        a  = (math.sin(dL/2)**2 +
+              math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dN/2)**2)
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    @staticmethod
+    def _bearing(lat1, lon1, lat2, lon2):
+        dN  = math.radians(lon2 - lon1)
+        y   = math.sin(dN) * math.cos(math.radians(lat2))
+        x   = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) -
+               math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dN))
+        return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+    def _nav_calc(self):
+        try:
+            la = float(self._nav_lat.get())
+            lo = float(self._nav_lon.get())
+        except ValueError:
+            self._nav_info.config(text="Enter valid lat/lon coordinates")
+            return
+        dist = self._haversine(self._nav_phone_lat or 0, self._nav_phone_lon or 0, la, lo)
+        brg  = self._bearing(self._nav_phone_lat or 0, self._nav_phone_lon or 0, la, lo)
+        self._nav_brg = brg
+        self._draw_nav_compass(self._nav_hdg, brg)
+        dist_str = f"{dist:.0f}m" if dist < 1000 else f"{dist/1000:.2f}km"
+        self._nav_info.config(text=f"BRG: {brg:.1f}°  DIST: {dist_str}")
+
+    def _nav_fly_to(self):
+        try:
+            la = float(self._nav_lat.get())
+            lo = float(self._nav_lon.get())
+        except ValueError:
+            self._nav_info.config(text="Set target coordinates first")
+            return
+        if not self.conn.connected:
+            self._log("Not connected", DANGER); return
+        brg  = self._bearing(self._nav_phone_lat or 0, self._nav_phone_lon or 0, la, lo)
+        dist = self._haversine(self._nav_phone_lat or 0, self._nav_phone_lon or 0, la, lo)
+        # Build a proper single-segment PRESET that the FC understands
+        segment = {
+            "bearing": round(brg, 1),
+            "dist_m":  round(dist, 1),
+            "speed":   0.4
+        }
+        self.conn.send({"cmd": "PRESET", "segments": [segment]})
+        dist_str = f"{dist:.0f}m" if dist < 1000 else f"{dist/1000:.2f}km"
+        self._log(f"NAV → BRG {brg:.1f}° | {dist_str}", ACCENT)
+        self.dms.reset()
+
+    def _nav_use_phone(self):
+        if not self._nav_phone_lat:
+            self._nav_info.config(text="No phone GPS fix yet")
+            return
+        self._nav_lat.delete(0, "end")
+        self._nav_lat.insert(0, f"{self._nav_phone_lat:.6f}")
+        self._nav_lon.delete(0, "end")
+        self._nav_lon.insert(0, f"{self._nav_phone_lon:.6f}")
+        self._nav_info.config(text="Target set to current phone position")
+
+    def _send_cmd_raw(self, payload: dict):
+        if not self.conn.connected:
+            self._log("Not connected", DANGER); return
+        if self.conn.send(payload):
+            self._log(f"→ {payload.get('cmd','?')}", ACCENT)
+            self.dms.reset()
+
+    # ── GUIDE PANEL ──────────────────────────────────────────
+
+    def _build_guide_panel(self, parent):
+        f = tk.Frame(parent, bg=BG)
+
+        lf = tk.Frame(f, bg=PANEL)
+        lf.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        tk.Label(lf, text="TRAINING GUIDE", bg=PANEL, fg=SUCCESS,
+                 font=F_HEAD).pack(anchor="w", padx=12, pady=(10, 4))
+        tk.Label(lf, text="LIVE PRE-FLIGHT CHECKLIST",
+                 bg=PANEL, fg=SUBTEXT, font=F_SMALL).pack(anchor="w", padx=12)
+
+        steps = [
+            ("step0", "Power on — FC connection"),
+            ("step1", "IMU calibrated and healthy"),
+            ("step2", "Sonar active and reading altitude"),
+            ("step3", "Battery above 10.5V"),
+            ("step4", "Phone GPS fix obtained"),
+            ("step5", "Drone stable — roll/pitch within ±5°"),
+            ("step6", "ARM the drone"),
+        ]
+        tbl = tk.Frame(lf, bg=PANEL)
+        tbl.pack(fill="x", padx=12, pady=10)
+        for row, (key, label) in enumerate(steps):
+            sv = tk.StringVar(value=f"○  {label}")
+            lbl = tk.Label(tbl, textvariable=sv, bg=PANEL, fg=SUBTEXT,
+                           font=F_BODY, anchor="w")
+            lbl.grid(row=row, column=0, sticky="w", pady=3)
+            self._guide_labels[key] = (lbl, sv, label)
+
+        tk.Frame(lf, bg=PANEL, height=8).pack()
+        tk.Label(lf, text="SIMULATION LOCK", bg=PANEL, fg=WARN,
+                 font=F_SMALL).pack(anchor="w", padx=12)
+        tk.Label(lf, text="Blocks ARM command — safe for training and UI familiarization.",
+                 bg=PANEL, fg=SUBTEXT, font=F_SMALL, wraplength=260).pack(
+             anchor="w", padx=12, pady=2)
+
+        self._sim_lock_var = tk.StringVar(value="○  SIMULATION LOCK: OFF")
+        self._sim_btn = tk.Button(lf, textvariable=self._sim_lock_var,
+                                   bg=PANEL, fg=SUCCESS, font=F_BODY,
+                                   relief="flat", cursor="hand2",
+                                   command=self._toggle_sim)
+        self._sim_btn.pack(fill="x", padx=12, pady=6, ipady=8)
+
+        return f
+
+    def _toggle_sim(self):
+        self._sim_lock = not self._sim_lock
+        if self._sim_lock:
+            self._sim_lock_var.set("⬛  SIMULATION LOCK: ON — ARM BLOCKED")
+            self._sim_btn.config(fg=WARN)
+            self._log("SIM LOCK enabled — ARM command blocked", WARN)
+        else:
+            self._sim_lock_var.set("○  SIMULATION LOCK: OFF")
+            self._sim_btn.config(fg=SUCCESS)
+            self._log("SIM LOCK disabled", SUCCESS)
+
+    def _guide_update(self, pkt):
+        """Update training guide checklist from telemetry."""
+        checks = [
+            ("step0", pkt.get("mode") not in (None, "---")),
+            ("step1", pkt.get("imu_ok") == 1),
+            ("step2", pkt.get("sonar_ok") == 1),
+            ("step3", pkt.get("bat_mv", 0) >= 10500),
+            ("step4", bool(self._nav_phone_lat)),
+            ("step5", abs(pkt.get("roll",  99)) < 5 and abs(pkt.get("pitch", 99)) < 5),
+            ("step6", bool(pkt.get("armed"))),
+        ]
+        for key, ok in checks:
+            if key not in self._guide_labels:
+                continue
+            lbl, sv, label = self._guide_labels[key]
+            sv.set(("✔  " if ok else "○  ") + label)
+            lbl.config(fg=SUCCESS if ok else SUBTEXT)
 
     # ── PREFLIGHT PANEL ──────────────────────────────────────
 
@@ -1462,11 +1741,58 @@ class RADHAApp:
             c.create_oval(x-5,y-5,x+5,y+5, fill=col, outline="")
             c.create_text(x+8,y, anchor="w", text=str(i), fill=col, font=("Consolas",7))
 
+    def _toggle_click_mode(self):
+        self._click_mode = not self._click_mode
+        if self._click_mode:
+            self._click_pts = []
+            self._click_btn.config(text="CLICK MODE: ON  (click canvas to add waypoints)",
+                                   fg=ACCENT)
+            self._log("Click mode ON — click preview canvas to add waypoints", ACCENT)
+        else:
+            self._click_btn.config(text="CLICK MODE: OFF", fg=SUBTEXT)
+            self._click_pts = []
+            self._log("Click mode OFF", SUBTEXT)
+
+    def _canvas_click(self, event):
+        if not self._click_mode:
+            return
+        W = self._pcanvas.winfo_width()  or 270
+        H = self._pcanvas.winfo_height() or 420
+        # Convert canvas px to bearing/distance relative to previous point
+        if not self._click_pts:
+            # First click: set as origin
+            self._click_pts.append((event.x, event.y))
+            self._log(f"Path origin set at ({event.x},{event.y})", SUBTEXT)
+            return
+        prev = self._click_pts[-1]
+        dx_px = event.x - prev[0]
+        dy_px = -(event.y - prev[1])  # canvas Y is inverted
+        # Scale: assume preview spans ±200m range across canvas height
+        scale = 400.0 / H   # metres per pixel
+        dx_m = dx_px * scale
+        dy_m = dy_px * scale
+        dist = math.sqrt(dx_m**2 + dy_m**2)
+        if dist < 0.5:
+            return  # too close, ignore
+        bearing = (math.degrees(math.atan2(dx_m, dy_m)) + 360) % 360
+        self._click_pts.append((event.x, event.y))
+        seg = {"bearing": round(bearing, 1), "dist_m": round(dist, 1), "speed": 0.5}
+        self._preset_segs.append(seg)
+        n = len(self._preset_segs)
+        self._tree.insert("", "end",
+                          values=(n, f"{bearing:.1f}°", f"{dist:.1f}", "0.50"))
+        self._draw_preview()
+        self._log(f"Waypoint {n}: BRG {bearing:.1f}° | {dist:.1f}m", SUBTEXT)
+
     # ── Commands ─────────────────────────────────────────────
 
     def _send_cmd(self, cmd: str):
         if not self.conn.connected:
             self._log("Not connected to ESP32", DANGER); return
+        # SIM LOCK: block ARM during training
+        if cmd == "ARM" and self._sim_lock:
+            self._log("⚠ SIM LOCK active — ARM blocked", WARN)
+            return
         # ARM interlock: warn if preflight not passed
         if cmd == "ARM" and not self._preflight_critical:
             if not messagebox.askyesno(
@@ -1476,6 +1802,16 @@ class RADHAApp:
                 return
         if self.conn.send({"cmd": cmd}):
             self._log(f"→ {cmd}", ACCENT)
+            self.dms.reset()
+
+    def _set_alt(self):
+        if not self.conn.connected:
+            self._log("Not connected", DANGER); return
+        if not self._armed:
+            self._log("Arm the drone first", WARN); return
+        tgt = self._alt_target_var.get() if self._alt_target_var else 100
+        if self.conn.send({"cmd": "ALT_HOLD", "alt_cm": tgt}):
+            self._log(f"→ ALT_HOLD target={tgt}cm", ACCENT)
             self.dms.reset()
 
     def _kill_confirm(self):
@@ -1512,15 +1848,25 @@ class RADHAApp:
             self._latest_gps = pkt
             self.root.after(0, self._apply_gps, pkt)
         else:
-            # Sequence gap detection
+            # Sequence gap detection (thread-safe; handles ESP32 reboot reset)
             seq = pkt.get("seq", -1)
-            if seq >= 0 and self._last_seq >= 0:
-                gap = (seq - self._last_seq) & 0xFFFF
-                if gap > 1:
-                    self.root.after(0, self._log,
-                                    f"⚠ TELEM GAP: missed {gap-1} packet(s)", WARN)
             if seq >= 0:
-                self._last_seq = seq
+                with self._seq_lock:
+                    if self._last_seq >= 0:
+                        gap = (seq - self._last_seq) & 0xFFFF
+                        if gap == 0:
+                            pass  # duplicate
+                        elif gap > 32768:
+                            # Sequence went backward — ESP32 likely rebooted; reset without warning
+                            self._last_seq = seq
+                        elif gap > 1:
+                            self.root.after(0, self._log,
+                                            f"[SEQ] gap: {gap-1} packet(s) lost", "#ff9800")
+                            self._last_seq = seq
+                        else:
+                            self._last_seq = seq
+                    else:
+                        self._last_seq = seq
             self._latest_telem    = pkt
             self._telem_ts        = time.time()
             self._no_telem_warned = True   # suppress the "no FC data" warning
@@ -1547,9 +1893,15 @@ class RADHAApp:
                               fg=SUCCESS if armed else DANGER)
         self._mode_lbl.config(text=f"MODE: {pkt.get('mode','---')}")
         self._draw_ati(pkt.get("roll", 0), pkt.get("pitch", 0))
+        self._nav_hdg = float(pkt.get("yaw", 0))
+        self._draw_nav_compass(self._nav_hdg, self._nav_brg)
+        self._guide_update(pkt)
 
     def _apply_gps(self, pkt):
         fix = pkt.get("fix", 0)
+        if fix:
+            self._nav_phone_lat = float(pkt.get("lat", 0.0))
+            self._nav_phone_lon = float(pkt.get("lon", 0.0))
         self._gps_vars["fix"].set("3D FIX" if fix else "NO FIX")
         if self._fix_lbl:
             self._fix_lbl.config(fg=SUCCESS if fix else DANGER)

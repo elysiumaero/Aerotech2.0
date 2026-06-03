@@ -134,6 +134,11 @@ typedef enum { SEG_TURN=0, SEG_FLY, SEG_PAUSE } SegPhase;
 
 // (ESC output handled by Uno motor driver — see SUDARSHAN_MOTOR_UNO)
 
+// Motor-channel mapping set by the GCS motor-ID wizard.
+// motorMap[pos] = PCA9685 channel.  pos: 0=FL 1=FR 2=RL 3=RR
+// Default is identity (channel N = motor N) until wizard runs.
+uint8_t motorMap[4] = {0, 1, 2, 3};
+
 // PIDs
 PID pidRoll, pidPitch, pidYaw, pidAlt;
 
@@ -182,8 +187,9 @@ unsigned long lastCmdMs   = 0;
 unsigned long landTimer   = 0;
 unsigned long loopCount   = 0;
 
-// UART receive buffer
-String uartBuf = "";
+// UART receive buffer — fixed size prevents heap fragmentation
+static char uartBuf[256];
+static uint8_t uartLen = 0;
 
 // ─────────────────────────────────────────────────────────────
 //  MPU6050  (direct I2C register access)
@@ -267,9 +273,12 @@ void mpuCalibrate() {
 void computeAngles(float dt) {
   float aRoll  =  atan2f(accY, accZ)                        * 57.2958f;
   float aPitch = atan2f(-accX, sqrtf(accY*accY + accZ*accZ)) * 57.2958f;
-  roll_cf   = CF_ALPHA*(roll_cf  + gyrX*dt) + (1-CF_ALPHA)*aRoll;
-  pitch_cf  = CF_ALPHA*(pitch_cf + gyrY*dt) + (1-CF_ALPHA)*aPitch;
-  yaw_gyro += (IMU_YAW_SIGN * gyrZ) * dt;
+  float gxClamped = constrain(gyrX, -250.0f, 250.0f);
+  float gyClamped = constrain(gyrY, -250.0f, 250.0f);
+  roll_cf   = CF_ALPHA*(roll_cf  + gxClamped*dt) + (1-CF_ALPHA)*aRoll;
+  pitch_cf  = CF_ALPHA*(pitch_cf + gyClamped*dt) + (1-CF_ALPHA)*aPitch;
+  float gzClamped = constrain(gyrZ, -250.0f, 250.0f);
+  yaw_gyro += (IMU_YAW_SIGN * gzClamped) * dt;
   if (yaw_gyro >  180) yaw_gyro -= 360;
   if (yaw_gyro < -180) yaw_gyro += 360;
 }
@@ -289,6 +298,7 @@ float readSonar() {
     float raw    = d * 0.01715f;
     sonarValidMs = millis();
     sonarStale   = false;
+    if (alt_cm < 1.0f) return raw;   // cold-start: use raw directly, skip EMA
     // EMA: blend 40% new reading into 60% running value — rejects single spikes
     // while tracking real altitude changes within a few readings.
     return alt_cm * 0.60f + raw * 0.40f;
@@ -314,8 +324,19 @@ void sendMotors(uint16_t fl, uint16_t fr, uint16_t rl, uint16_t rr) {
   UNO_SERIAL.write(pkt, 10);
 }
 
+// Route FL/FR/RL/RR values to the correct PCA9685 channels
+// using the mapping saved by the GCS motor-ID wizard.
+void sendMotorsPos(uint16_t fl, uint16_t fr, uint16_t rl, uint16_t rr) {
+  uint16_t v[4] = {ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM};
+  v[motorMap[0]] = fl;
+  v[motorMap[1]] = fr;
+  v[motorMap[2]] = rl;
+  v[motorMap[3]] = rr;
+  sendMotors(v[0], v[1], v[2], v[3]);
+}
+
 void escsWrite(int fl, int fr, int rl, int rr) {
-  sendMotors(
+  sendMotorsPos(
     (uint16_t)constrain(fl, ESC_MIN, ESC_MAX),
     (uint16_t)constrain(fr, ESC_MIN, ESC_MAX),
     (uint16_t)constrain(rl, ESC_MIN, ESC_MAX),
@@ -344,12 +365,21 @@ void escsArm() {
 //    that axis in the mix below. Do NOT change PID gains first.
 // ─────────────────────────────────────────────────────────────
 void motorMix(int thr, float r, float p, float y) {
-  escsWrite(
-    thr + (int)( p + r - y),   // FL
-    thr + (int)( p - r + y),   // FR
-    thr + (int)(-p + r + y),   // RL
-    thr + (int)(-p - r - y)    // RR
-  );
+  int fl = thr + (int)( p + r - y);
+  int fr = thr + (int)( p - r + y);
+  int rl = thr + (int)(-p + r + y);
+  int rr = thr + (int)(-p - r - y);
+  // Proportional scale-down: if any motor exceeds ESC_MAX, scale ALL motors
+  // by the same factor so attitude ratios are preserved.
+  int hi = max(max(fl, fr), max(rl, rr));
+  if (hi > ESC_MAX) {
+    float scale = (float)(ESC_MAX - ESC_MIN) / (float)(hi - ESC_MIN);
+    fl = ESC_MIN + (int)((fl - ESC_MIN) * scale);
+    fr = ESC_MIN + (int)((fr - ESC_MIN) * scale);
+    rl = ESC_MIN + (int)((rl - ESC_MIN) * scale);
+    rr = ESC_MIN + (int)((rr - ESC_MIN) * scale);
+  }
+  escsWrite(fl, fr, rl, rr);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -388,6 +418,7 @@ void handleCmd(const String& line) {
     sp_roll=0; sp_pitch=0; sp_yaw=yaw_gyro;
     base_thr    = ESC_IDLE;
     target_alt  = alt_cm;
+    if (target_alt < 10.0f) target_alt = 30.0f;   // sonar cold/failed — safe default
     escsArm();
     mode = MODE_HOVER;
     ack("ARM", true);
@@ -426,6 +457,19 @@ void handleCmd(const String& line) {
     sp_roll=0; sp_pitch=0; sp_yaw=yaw_gyro;
     target_alt = alt_cm;
     ack("HOVER", true);
+    return;
+  }
+
+  // ── ALT_HOLD  {"cmd":"ALT_HOLD","alt_cm":150}
+  if (!strcmp(cmd, "ALT_HOLD")) {
+    if (mode == MODE_DISARMED || mode == MODE_KILL) {
+      ack("ALT_HOLD", false, "not armed"); return;
+    }
+    float a = doc["alt_cm"] | target_alt;
+    target_alt = constrain(a, 30.0f, 500.0f);
+    char mbuf[32];
+    snprintf(mbuf, sizeof(mbuf), "target=%dcm", (int)target_alt);
+    ack("ALT_HOLD", true, mbuf);
     return;
   }
 
@@ -472,12 +516,16 @@ void handleCmd(const String& line) {
     gps_baro_cm= doc["baro_cm"] | 0;
     gps_fix    = doc["fix"]     | 0;
     gps_sats   = doc["sats"]    | 0;
-    // Slow compass correction to cancel long-term gyro yaw drift
-    if (gps_fix) {
+    // Slow compass correction — only when GPS is fresh and drone is stable
+    if (gps_fix && !sonarStale) {
       float diff = gps_hdg - yaw_gyro;
       while (diff >  180) diff -= 360;
       while (diff < -180) diff += 360;
-      yaw_gyro += 0.005f * diff;  // very slow weight — won't disturb yaw PID
+      float corr = 0.005f * diff;
+      // Cap single-step correction to ±0.5° to prevent stale GPS yanking heading
+      if (corr >  0.5f) corr =  0.5f;
+      if (corr < -0.5f) corr = -0.5f;
+      yaw_gyro += corr;
     }
     return;
   }
@@ -505,6 +553,55 @@ void handleCmd(const String& line) {
     return;
   }
 
+  // ── SPIN_CH  {"cmd":"SPIN_CH","ch":0,"thr":1100,"dur":2000}  ─
+  // Spin a raw PCA9685 channel by index — used by motor-ID wizard.
+  // Bypasses motorMap intentionally (wizard builds the map).
+  if (!strcmp(cmd, "SPIN_CH")) {
+    if (mode != MODE_DISARMED) { ack("SPIN_CH", false, "must be DISARMED"); return; }
+    int ch  = constrain(doc["ch"]  | 0, 0, 3);
+    int thr = constrain(doc["thr"] | 1100, ESC_MIN, 1200);
+    unsigned long dur = constrain((unsigned long)(doc["dur"] | 2000), 500UL, 3000UL);
+    uint16_t v[4] = {ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM};
+    v[ch] = (uint16_t)thr;
+    escsKill(); delay(300);
+    sendMotors(v[0], v[1], v[2], v[3]);
+    delay(dur);
+    escsKill();
+    ack("SPIN_CH", true);
+    return;
+  }
+
+  // ── SET_MOTOR_MAP  {"cmd":"SET_MOTOR_MAP","fl":2,"fr":0,"rl":3,"rr":1}
+  // Save channel-to-motor mapping from the GCS motor-ID wizard.
+  if (!strcmp(cmd, "SET_MOTOR_MAP")) {
+    if (mode != MODE_DISARMED) { ack("SET_MOTOR_MAP", false, "must be DISARMED"); return; }
+    motorMap[0] = constrain(doc["fl"] | 0, 0, 3);
+    motorMap[1] = constrain(doc["fr"] | 1, 0, 3);
+    motorMap[2] = constrain(doc["rl"] | 2, 0, 3);
+    motorMap[3] = constrain(doc["rr"] | 3, 0, 3);
+    char mbuf[48];
+    snprintf(mbuf, sizeof(mbuf), "FL=CH%d FR=CH%d RL=CH%d RR=CH%d",
+             motorMap[0], motorMap[1], motorMap[2], motorMap[3]);
+    ack("SET_MOTOR_MAP", true, mbuf);
+    return;
+  }
+
+  // ── CAL_ESC  (one-time ESC throttle-range calibration) ───────
+  // Standard procedure: full throttle → ESC double-beep → minimum
+  // throttle → ESC confirms. Run once per ESC, props OFF.
+  if (!strcmp(cmd, "CAL_ESC")) {
+    if (mode != MODE_DISARMED) { ack("CAL_ESC", false, "must be DISARMED"); return; }
+    DBG_SERIAL.println(F("[ESC ] CAL — sending 2000us (listen for double-beep)..."));
+    sendMotors(2000, 2000, 2000, 2000);
+    delay(3000);
+    DBG_SERIAL.println(F("[ESC ] CAL — sending 1000us (listen for confirm beeps)..."));
+    sendMotors(ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM);
+    delay(3000);
+    DBG_SERIAL.println(F("[ESC ] CAL done"));
+    ack("CAL_ESC", true, "ESCs calibrated — cycle power to confirm");
+    return;
+  }
+
   // ── PRESET ────────────────────────────────────────────────
   if (!strcmp(cmd, "PRESET")) {
     if (mode == MODE_DISARMED || mode == MODE_KILL) {
@@ -514,9 +611,11 @@ void handleCmd(const String& line) {
     segCount = 0;
     for (JsonObject s : arr) {
       if (segCount >= MAX_SEGS) break;
+      float segDist = s["dist_m"] | 1.0f;
+      if (segDist < 0.1f) segDist = 0.1f;   // prevent division-by-zero in flyMs calc
       segs[segCount++] = {
         s["bearing"] | 0.0f,
-        s["dist_m"]  | 1.0f,
+        segDist,
         constrain(s["speed"] | 0.5f, 0.1f, 1.0f)
       };
     }
@@ -708,7 +807,10 @@ void controlLoop(float dt) {
   float rOut = pidRoll.compute (sp_roll,   roll_cf,  dt);
   float pOut = pidPitch.compute(sp_pitch,  pitch_cf, dt);
   float yOut = pidYaw.compute  (sp_yaw,    yaw_gyro, dt);
+  // Freeze altitude integrator while sonar is stale to prevent windup
+  float savedAltInteg = pidAlt.integ;
   float aOut = pidAlt.compute  (target_alt, alt_cm,  dt);
+  if (sonarStale) { pidAlt.integ = savedAltInteg; aOut = 0; }
 
   int thr = constrain(base_thr + (int)aOut, ESC_MIN, ESC_MAX - 200);
 
@@ -722,12 +824,15 @@ void readUART() {
   while (ESP_SERIAL.available()) {
     char ch = (char)ESP_SERIAL.read();
     if (ch == '\n') {
-      uartBuf.trim();
-      if (uartBuf.length() > 0) handleCmd(uartBuf);
-      uartBuf = "";
+      uartBuf[uartLen] = '\0';
+      if (uartLen > 0) handleCmd(String(uartBuf));
+      uartLen = 0;
     } else {
-      uartBuf += ch;
-      if (uartBuf.length() > 512) uartBuf = "";
+      if (uartLen < 255) {
+        uartBuf[uartLen++] = ch;
+      } else {
+        uartLen = 0;   // line too long — discard and resync
+      }
     }
   }
 }
@@ -779,9 +884,9 @@ void setup() {
     mpuCalibrate();
   }
 
-  // First sonar read
+  // First sonar read — pre-init sonarValidMs so stale check doesn't fire on boot
+  sonarValidMs = millis();
   alt_cm = readSonar();
-  sonarValidMs = millis();   // prevent premature stale flag on boot
   DBG_SERIAL.print(F("[SONAR] "));
   DBG_SERIAL.print(alt_cm, 1);
   DBG_SERIAL.println(F(" cm"));

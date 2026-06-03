@@ -51,6 +51,7 @@ Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA_ADDR);
 
 uint8_t buf[PKT_LEN];
 uint8_t idx = 0;
+unsigned long lastByteMs = 0;   // timestamp of last byte received (for packet timeout)
 
 // ─────────────────────────────────────────────────────────────
 //  ESC HELPERS
@@ -98,7 +99,9 @@ void setup() {
   Serial.begin(115200);   // UART to Mega (also USB — disconnect wires when flashing)
 
   pca.begin();
-  pca.setOscillatorFrequency(27000000);  // actual osc ~27 MHz for accurate µs
+  // Do NOT call setOscillatorFrequency() — leave at the library default
+  // (25 MHz). Overriding to 27 MHz on a board that runs at 25 MHz shrinks
+  // every pulse by ~8%, turning 1000 µs into ~926 µs which ESCs reject.
   pca.setPWMFreq(50);                    // 50 Hz — standard ESC PWM
   delay(10);
 
@@ -114,8 +117,14 @@ void setup() {
 //  LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
+  // Packet timeout: if mid-packet and no byte for 10ms, resync
+  if (idx > 0 && (millis() - lastByteMs) > 10) {
+    idx = 0;
+  }
+
   while (Serial.available()) {
     uint8_t b = (uint8_t)Serial.read();
+    lastByteMs = millis();
 
     if (idx == 0 && b != PKT_START) continue;  // hunt for start byte
 
