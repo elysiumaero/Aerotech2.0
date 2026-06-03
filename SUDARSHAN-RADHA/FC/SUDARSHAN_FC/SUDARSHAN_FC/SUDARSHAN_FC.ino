@@ -7,19 +7,20 @@
  * ║  WIRING                                                      ║
  * ║    MPU6050  SDA → Pin 20  |  SCL → Pin 21   (I2C)           ║
  * ║    HC-SR04  Trig → D7     |  Echo → D8                      ║
- * ║    ESC FL→D3  FR→D5  RL→D6  RR→D9                          ║
+ * ║    PCA9685  SDA → Pin 20  |  SCL → Pin 21  (same I2C bus)   ║
+ * ║    ESC FL→CH0  FR→CH1  RL→CH2  RR→CH3  (PCA9685 channels)  ║
  * ║    Battery  → A0  (via divider: 47kΩ + 10kΩ for 3S)        ║
  * ║    ESP32 TX → Pin 19 (Serial1 RX)                           ║
  * ║    ESP32 RX → Pin 18 (Serial1 TX)  [3.3V safe, no divider] ║
  * ║    ⚠ Update ESP32 firmware wiring to pins 18/19 on Mega     ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  LIBRARIES                                                   ║
- * ║    Wire.h · Servo.h · ArduinoJson v6                        ║
+ * ║    Wire.h · Adafruit_PWMServoDriver · ArduinoJson v6        ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
 #include <Wire.h>
-#include <Servo.h>
+#include <Adafruit_PWMServoDriver.h>
 #include <ArduinoJson.h>
 
 // ─────────────────────────────────────────────────────────────
@@ -30,11 +31,14 @@
 #define ESP_SERIAL   Serial1   // pins 18(TX) / 19(RX) — to ESP32
 #define DBG_SERIAL   Serial    // USB debug
 
-// ESC pins
-#define PIN_FL  3
-#define PIN_FR  5
-#define PIN_RL  6
-#define PIN_RR  9
+// PCA9685 16-ch I2C PWM driver — ESC channels
+// Default I2C address 0x40 (all A0-A5 pads open).
+// Solder A0 pad to raise address to 0x41, etc.
+#define PCA_ADDR  0x40
+#define CH_FL     0
+#define CH_FR     1
+#define CH_RL     2
+#define CH_RR     3
 
 // Sonar pins
 #define PIN_TRIG  7
@@ -134,8 +138,8 @@ typedef enum { SEG_TURN=0, SEG_FLY, SEG_PAUSE } SegPhase;
 //  GLOBALS
 // ─────────────────────────────────────────────────────────────
 
-// ESCs
-Servo escFL, escFR, escRL, escRR;
+// PCA9685 PWM driver (I2C)
+Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA_ADDR);
 
 // PIDs
 PID pidRoll, pidPitch, pidYaw, pidAlt;
@@ -304,17 +308,17 @@ float readSonar() {
 //  ESCs
 // ─────────────────────────────────────────────────────────────
 void escsWrite(int fl, int fr, int rl, int rr) {
-  escFL.writeMicroseconds(constrain(fl, ESC_MIN, ESC_MAX));
-  escFR.writeMicroseconds(constrain(fr, ESC_MIN, ESC_MAX));
-  escRL.writeMicroseconds(constrain(rl, ESC_MIN, ESC_MAX));
-  escRR.writeMicroseconds(constrain(rr, ESC_MIN, ESC_MAX));
+  pca.writeMicroseconds(CH_FL, constrain(fl, ESC_MIN, ESC_MAX));
+  pca.writeMicroseconds(CH_FR, constrain(fr, ESC_MIN, ESC_MAX));
+  pca.writeMicroseconds(CH_RL, constrain(rl, ESC_MIN, ESC_MAX));
+  pca.writeMicroseconds(CH_RR, constrain(rr, ESC_MIN, ESC_MAX));
 }
 
 void escsKill() {
-  escFL.writeMicroseconds(ESC_ARM);
-  escFR.writeMicroseconds(ESC_ARM);
-  escRL.writeMicroseconds(ESC_ARM);
-  escRR.writeMicroseconds(ESC_ARM);
+  pca.writeMicroseconds(CH_FL, ESC_ARM);
+  pca.writeMicroseconds(CH_FR, ESC_ARM);
+  pca.writeMicroseconds(CH_RL, ESC_ARM);
+  pca.writeMicroseconds(CH_RR, ESC_ARM);
 }
 
 void escsArm() {
@@ -480,15 +484,15 @@ void handleCmd(const String& line) {
     int  thr = constrain(doc["throttle"]    | 1100, ESC_MIN, 1200);  // hard cap 1200µs
     unsigned long dur = constrain((unsigned long)(doc["duration_ms"] | 1000),
                                   200UL, 2000UL);
-    // Arm all ESCs to minimum first
+    uint8_t ch = 255;
+    if      (!strcmp(motor, "FL")) ch = CH_FL;
+    else if (!strcmp(motor, "FR")) ch = CH_FR;
+    else if (!strcmp(motor, "RL")) ch = CH_RL;
+    else if (!strcmp(motor, "RR")) ch = CH_RR;
+    if (ch == 255) { ack("MOTOR_TEST", false, "bad motor"); return; }
     escsKill();
     delay(500);
-    // Spin only the requested motor
-    if      (!strcmp(motor, "FL")) escFL.writeMicroseconds(thr);
-    else if (!strcmp(motor, "FR")) escFR.writeMicroseconds(thr);
-    else if (!strcmp(motor, "RL")) escRL.writeMicroseconds(thr);
-    else if (!strcmp(motor, "RR")) escRR.writeMicroseconds(thr);
-    else { ack("MOTOR_TEST", false, "bad motor"); return; }
+    pca.writeMicroseconds(ch, thr);
     delay(dur);        // blocking OK — drone is DISARMED on bench
     escsKill();
     ack("MOTOR_TEST", true, motor);
@@ -734,13 +738,16 @@ void setup() {
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
 
-  // ESC attach + arm sequence (sends ESC_ARM for 2.5s)
-  escFL.attach(PIN_FL); escFR.attach(PIN_FR);
-  escRL.attach(PIN_RL); escRR.attach(PIN_RR);
+  // PCA9685 init + ESC arm sequence (holds ESC_ARM for 2.5 s)
+  // The actual oscillator is closer to 27 MHz; calibrate for accurate µs.
+  pca.begin();
+  pca.setOscillatorFrequency(27000000);
+  pca.setPWMFreq(50);   // 50 Hz = 20 ms period — standard ESC protocol
+  delay(10);
   escsKill();
-  DBG_SERIAL.println("[ESC ] attached — holding ARM signal");
+  DBG_SERIAL.println(F("[ESC ] PCA9685 OK — holding ARM signal"));
   delay(2500);
-  DBG_SERIAL.println("[ESC ] ready");
+  DBG_SERIAL.println(F("[ESC ] ready"));
 
   // IMU — probe both addresses (AD0 LOW=0x68, AD0 HIGH=0x69)
   imuOk = mpuInit();
