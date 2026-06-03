@@ -7,19 +7,19 @@
  * ║  WIRING                                                      ║
  * ║    MPU6050  SDA → Pin 20  |  SCL → Pin 21   (I2C)           ║
  * ║    HC-SR04  Trig → D7     |  Echo → D8                      ║
- * ║    ESC FL→D3  FR→D5  RL→D6  RR→D9                          ║
+ * ║    Uno Motor Driver  ← Serial2 (TX=Pin16  RX=Pin17)         ║
+ * ║    ESC signals via PCA9685 on Uno (CH0=FL 1=FR 2=RL 3=RR)  ║
  * ║    Battery  → A0  (via divider: 47kΩ + 10kΩ for 3S)        ║
  * ║    ESP32 TX → Pin 19 (Serial1 RX)                           ║
  * ║    ESP32 RX → Pin 18 (Serial1 TX)  [3.3V safe, no divider] ║
  * ║    ⚠ Update ESP32 firmware wiring to pins 18/19 on Mega     ║
  * ╠══════════════════════════════════════════════════════════════╣
  * ║  LIBRARIES                                                   ║
- * ║    Wire.h · Servo.h · ArduinoJson v6                        ║
+ * ║    Wire.h · ArduinoJson v6  (Adafruit driver lives on Uno)  ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
 #include <Wire.h>
-#include <Servo.h>
 #include <ArduinoJson.h>
 
 // ─────────────────────────────────────────────────────────────
@@ -30,11 +30,9 @@
 #define ESP_SERIAL   Serial1   // pins 18(TX) / 19(RX) — to ESP32
 #define DBG_SERIAL   Serial    // USB debug
 
-// ESC pins
-#define PIN_FL  3
-#define PIN_FR  5
-#define PIN_RL  6
-#define PIN_RR  9
+// Uno motor driver — Serial2 (Mega TX2=Pin16, RX2=Pin17)
+#define UNO_SERIAL  Serial2
+#define UNO_BAUD    115200
 
 // Sonar pins
 #define PIN_TRIG  7
@@ -134,8 +132,7 @@ typedef enum { SEG_TURN=0, SEG_FLY, SEG_PAUSE } SegPhase;
 //  GLOBALS
 // ─────────────────────────────────────────────────────────────
 
-// ESCs
-Servo escFL, escFR, escRL, escRR;
+// (ESC output handled by Uno motor driver — see SUDARSHAN_MOTOR_UNO)
 
 // PIDs
 PID pidRoll, pidPitch, pidYaw, pidAlt;
@@ -301,20 +298,33 @@ float readSonar() {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  ESCs
+//  ESCs  (via Uno motor driver — 10-byte binary packet over Serial2)
+//  Packet: [0xAA][fl_H][fl_L][fr_H][fr_L][rl_H][rl_L][rr_H][rr_L][xor]
 // ─────────────────────────────────────────────────────────────
+void sendMotors(uint16_t fl, uint16_t fr, uint16_t rl, uint16_t rr) {
+  uint8_t pkt[10];
+  pkt[0] = 0xAA;
+  pkt[1] = fl >> 8;  pkt[2] = fl & 0xFF;
+  pkt[3] = fr >> 8;  pkt[4] = fr & 0xFF;
+  pkt[5] = rl >> 8;  pkt[6] = rl & 0xFF;
+  pkt[7] = rr >> 8;  pkt[8] = rr & 0xFF;
+  uint8_t xorChk = 0;
+  for (uint8_t i = 1; i < 9; i++) xorChk ^= pkt[i];
+  pkt[9] = xorChk;
+  UNO_SERIAL.write(pkt, 10);
+}
+
 void escsWrite(int fl, int fr, int rl, int rr) {
-  escFL.writeMicroseconds(constrain(fl, ESC_MIN, ESC_MAX));
-  escFR.writeMicroseconds(constrain(fr, ESC_MIN, ESC_MAX));
-  escRL.writeMicroseconds(constrain(rl, ESC_MIN, ESC_MAX));
-  escRR.writeMicroseconds(constrain(rr, ESC_MIN, ESC_MAX));
+  sendMotors(
+    (uint16_t)constrain(fl, ESC_MIN, ESC_MAX),
+    (uint16_t)constrain(fr, ESC_MIN, ESC_MAX),
+    (uint16_t)constrain(rl, ESC_MIN, ESC_MAX),
+    (uint16_t)constrain(rr, ESC_MIN, ESC_MAX)
+  );
 }
 
 void escsKill() {
-  escFL.writeMicroseconds(ESC_ARM);
-  escFR.writeMicroseconds(ESC_ARM);
-  escRL.writeMicroseconds(ESC_ARM);
-  escRR.writeMicroseconds(ESC_ARM);
+  sendMotors(ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM);
 }
 
 void escsArm() {
@@ -480,15 +490,15 @@ void handleCmd(const String& line) {
     int  thr = constrain(doc["throttle"]    | 1100, ESC_MIN, 1200);  // hard cap 1200µs
     unsigned long dur = constrain((unsigned long)(doc["duration_ms"] | 1000),
                                   200UL, 2000UL);
-    // Arm all ESCs to minimum first
+    uint16_t fl = ESC_ARM, fr = ESC_ARM, rl = ESC_ARM, rr = ESC_ARM;
+    if      (!strcmp(motor, "FL")) fl = (uint16_t)thr;
+    else if (!strcmp(motor, "FR")) fr = (uint16_t)thr;
+    else if (!strcmp(motor, "RL")) rl = (uint16_t)thr;
+    else if (!strcmp(motor, "RR")) rr = (uint16_t)thr;
+    else { ack("MOTOR_TEST", false, "bad motor"); return; }
     escsKill();
     delay(500);
-    // Spin only the requested motor
-    if      (!strcmp(motor, "FL")) escFL.writeMicroseconds(thr);
-    else if (!strcmp(motor, "FR")) escFR.writeMicroseconds(thr);
-    else if (!strcmp(motor, "RL")) escRL.writeMicroseconds(thr);
-    else if (!strcmp(motor, "RR")) escRR.writeMicroseconds(thr);
-    else { ack("MOTOR_TEST", false, "bad motor"); return; }
+    sendMotors(fl, fr, rl, rr);   // only selected motor gets thr; others stay at ESC_ARM
     delay(dur);        // blocking OK — drone is DISARMED on bench
     escsKill();
     ack("MOTOR_TEST", true, motor);
@@ -734,13 +744,27 @@ void setup() {
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
 
-  // ESC attach + arm sequence (sends ESC_ARM for 2.5s)
-  escFL.attach(PIN_FL); escFR.attach(PIN_FR);
-  escRL.attach(PIN_RL); escRR.attach(PIN_RR);
-  escsKill();
-  DBG_SERIAL.println("[ESC ] attached — holding ARM signal");
-  delay(2500);
-  DBG_SERIAL.println("[ESC ] ready");
+  // Uno motor driver — Serial2 (TX=Pin16, RX=Pin17)
+  // Uno runs ESC arming sequence internally and sends "READY" when done.
+  UNO_SERIAL.begin(UNO_BAUD);
+  DBG_SERIAL.println(F("[UNO ] waiting for motor driver (ESC arming ~3s)..."));
+  {
+    String line = "";
+    bool   ready = false;
+    unsigned long t0 = millis();
+    while (millis() - t0 < 8000 && !ready) {
+      while (UNO_SERIAL.available()) {
+        char c = (char)UNO_SERIAL.read();
+        if (c == '\n') {
+          line.trim();
+          if (line == "READY") ready = true;
+          line = "";
+        } else { line += c; }
+      }
+    }
+    DBG_SERIAL.println(ready ? F("[UNO ] motor driver ready — ESCs armed") :
+                               F("[UNO ] WARNING: motor driver not responding"));
+  }
 
   // IMU — probe both addresses (AD0 LOW=0x68, AD0 HIGH=0x69)
   imuOk = mpuInit();
