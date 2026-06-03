@@ -40,6 +40,7 @@
  */
 
 #include <WiFi.h>
+#include <WebSocketsServer.h>   // arduinoWebSockets by Markus Sattler — install via Library Manager
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include "mbedtls/aes.h"
@@ -60,6 +61,8 @@
 #define GPS_FWD_MS     200UL
 #define LED_PIN        2
 #define ADMIN_PASS     "SUDARSHAN2025"   // change to your preferred password
+#define PRIORITY_PASS  "1410"            // unlocks web GCS while Python GCS is on TCP
+#define MASTER_PASS    "980752"          // accepted for ALL auth checks (super-admin)
 
 static const IPAddress AP_IP (192, 168, 4, 1);
 static const IPAddress AP_GW (192, 168, 4, 1);
@@ -356,6 +359,8 @@ input[type=number]{width:100%;background:#0a0a0a;color:#e0e0e0;border:1px solid 
 <div class="btns">
   <button onclick="togNav()">NAV&#9660;</button>
   <button onclick="togTrn()">GUIDE&#9660;</button>
+  <button onclick="togAlt()">ALT&#9660;</button>
+  <button onclick="togPath()">PATH&#9660;</button>
 </div>
 
 <div id="ovr">
@@ -422,6 +427,53 @@ input[type=number]{width:100%;background:#0a0a0a;color:#e0e0e0;border:1px solid 
     <button style="width:100%;border-color:#ff9800;color:#ff9800" onclick="calEsc()">&#9889; CALIBRATE ALL ESCs</button>
   </div>
 </div>
+<div id="lockoverlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:99;align-items:center;justify-content:center">
+  <div style="background:#111;border:1px solid #ff9800;border-radius:4px;padding:16px;max-width:280px;width:90%;text-align:center">
+    <div class="lbl" style="color:#ff9800;font-size:.85em;margin-bottom:8px;letter-spacing:1px">&#9888; PYTHON GCS ACTIVE</div>
+    <div class="lbl" style="margin-bottom:8px">Web GCS is locked while the laptop GCS is connected. Enter the priority code to override, or the master code for full access.</div>
+    <input id="lockPass" type="password" placeholder="Priority or master code"
+      style="width:100%;background:#0a0a0a;color:#e0e0e0;border:1px solid #555;border-radius:3px;padding:6px;font-family:Consolas,monospace;font-size:.82em;margin-bottom:8px;-webkit-appearance:none">
+    <div id="lockMsg" style="font-size:.75em;color:#ff3b3b;min-height:1em;margin-bottom:6px"></div>
+    <div class="btns" style="margin:0">
+      <button style="border-color:#ff9800;color:#ff9800;flex:2" onclick="doUnlock()">UNLOCK</button>
+      <button style="border-color:#555;color:#555;flex:1" onclick="hideLock()">CANCEL</button>
+    </div>
+  </div>
+</div>
+
+<div id="altpanel" style="display:none;background:#111;border:1px solid #0d1a20;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#00e5ff;letter-spacing:1px;margin-bottom:5px">ALTITUDE SETPOINT</div>
+  <div class="lbl" style="margin-bottom:3px">TARGET <span id="altSV" style="color:#00e5ff">100</span> cm</div>
+  <input id="altSldr" type="range" min="30" max="500" value="100" step="10"
+    style="width:100%;accent-color:#00e5ff;margin-bottom:6px"
+    oninput="document.getElementById('altSV').textContent=this.value">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+    <span class="lbl">CURRENT</span>
+    <span id="altCur" style="color:#00e676;font-size:.9em;font-weight:bold">--- cm</span>
+  </div>
+  <button style="width:100%;border-color:#00e5ff;color:#00e5ff" onclick="setAlt()">SET ALTITUDE</button>
+</div>
+
+<div id="pathpanel" style="display:none;background:#111;border:1px solid #1a0d20;border-radius:3px;padding:6px;margin-bottom:5px">
+  <div class="lbl" style="color:#00e5ff;letter-spacing:1px;margin-bottom:5px">PATH BUILDER</div>
+  <div class="lbl" style="margin-bottom:3px">Tap map to add waypoints. Scale: <span id="pathScaleV">2</span> m/px</div>
+  <input type="range" min="1" max="10" value="2" step="1"
+    style="width:100%;accent-color:#9c27b0;margin-bottom:4px"
+    oninput="document.getElementById('pathScaleV').textContent=this.value" id="pathScale">
+  <svg id="pathSvg" width="100%" viewBox="0 0 200 200"
+    style="display:block;background:#0a0a0a;border:1px solid #222;border-radius:3px;margin-bottom:4px;touch-action:none"
+    onclick="pathTap(event)" ontouchend="pathTouch(event)">
+    <g id="pathGrid"></g>
+    <g id="pathLines"></g>
+    <g id="pathDots"></g>
+  </svg>
+  <div id="pathInfo" style="font-size:.75em;color:#ffcc00;min-height:1.2em;margin-bottom:4px;text-align:center">Tap map to start</div>
+  <div class="btns">
+    <button style="border-color:#00e676;color:#00e676;flex:2" onclick="pathExec()">&#10148; EXECUTE PATH</button>
+    <button style="border-color:#ff3b3b;color:#ff3b3b;flex:1" onclick="pathClear()">CLEAR</button>
+  </div>
+</div>
+
 <div id="navpanel" style="display:none;background:#111;border:1px solid #0d2020;border-radius:3px;padding:6px;margin-bottom:5px">
   <div class="lbl" style="color:#00e5ff;letter-spacing:1px;margin-bottom:5px">GPS NAVIGATION</div>
   <svg id="navSvg" width="110" height="110" style="display:block;margin:0 auto 5px">
@@ -523,7 +575,11 @@ function sc(cmd,extra){
   if(extra){for(var k in extra)b[k]=extra[k];}
   fetch('/api/cmd',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(b)}).catch(function(){});
+    body:JSON.stringify(b)})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.locked){showLock(cmd,extra);}
+    }).catch(function(){});
 }
 
 setInterval(function(){sc('PING');},25000);
@@ -545,38 +601,47 @@ function togOvr(){
   d.style.display=(d.style.display==='block')?'none':'block';
 }
 
+function applyTelem(d){
+  var lv=document.getElementById('live');
+  lv.textContent='● LIVE';lv.style.color='#00e676';
+  document.getElementById('mval').textContent=(d.mode||'---');
+  var ae=document.getElementById('armd');
+  if(d.armed){ae.textContent='ARMED';ae.style.color='#00e676';}
+  else{ae.textContent='DISARMED';ae.style.color='#444';}
+  var f=function(v,n){return(typeof v==='number')?v.toFixed(n===undefined?1:n):'---';};
+  document.getElementById('troll').textContent=f(d.roll)+'*';
+  document.getElementById('tpitch').textContent=f(d.pitch)+'*';
+  document.getElementById('tyaw').textContent=f(d.yaw)+'*';
+  document.getElementById('talt').textContent=typeof d.alt_cm==='number'?d.alt_cm+'cm':'---';
+  document.getElementById('tbat').textContent=typeof d.bat_mv==='number'?(d.bat_mv/1000).toFixed(2)+'V':'---';
+  document.getElementById('altCur').textContent=(typeof d.alt_cm==='number'?d.alt_cm:'---')+' cm';
+  if(d.last_ack){try{var a=JSON.parse(d.last_ack);var ab=document.getElementById('ackbar');ab.style.display='block';ab.textContent='FC: '+a.ack+' '+a.status+(a.msg?' — '+a.msg:'');clearTimeout(window._ackTm);window._ackTm=setTimeout(function(){ab.style.display='none';},6000);}catch(e){}}
+  var _G='#00e676',_R='#ff3b3b',_Y='#ffcc00',_U='#444';
+  if(typeof d.imu_ok==='number'){var ie=document.getElementById('pfImu');ie.textContent=d.imu_ok?'PASS':'FAIL';ie.style.color=d.imu_ok?_G:_R;}
+  if(typeof d.sonar_ok==='number'){var se=document.getElementById('pfSon');se.textContent=d.sonar_ok?'PASS':'STALE';se.style.color=d.sonar_ok?_G:_Y;}
+  if(typeof d.bat_mv==='number'&&d.bat_mv>0){var bv=d.bat_mv/1000,be=document.getElementById('pfBat');be.textContent=bv.toFixed(2)+'V'+(d.bat_mv<9900?' CRITICAL':d.bat_mv<10500?' LOW':'');be.style.color=d.bat_mv>10500?_G:d.bat_mv>9900?_Y:_R;}
+  var ge=document.getElementById('pfGps');if(d.gps_fix){ge.textContent='FIX ('+d.gps_sats+' sat)';ge.style.color=_G;}else{ge.textContent='NO FIX — press GPS button';ge.style.color=_U;}
+  var me=document.getElementById('pfMod');if(me)me.textContent=d.mode||'---';
+  if(typeof d.roll==='number')drawAti(d.roll||0,d.pitch||0);
+  if(d.gps_lat&&d.gps_lat!==0){
+    document.getElementById('glat').textContent=d.gps_lat.toFixed(6);
+    document.getElementById('glon').textContent=d.gps_lon.toFixed(6);
+    document.getElementById('gfix').textContent=(d.gps_fix?'FIX':'---')+'/'+(d.gps_sats||0);
+    navPhoneLat=d.gps_lat;navPhoneLon=d.gps_lon;
+  }
+  window._lastHdg=typeof d.yaw==='number'?d.yaw:0;
+  navUpdateSvg(window._lastHdg,null);
+  navUpdateTrn(d);
+  // Priority lock indicator
+  if(d.gcs_lock){
+    var li=document.getElementById('live');
+    li.textContent='● LOCKED';li.style.color='#ff9800';
+  }
+}
 function pollTelem(){
+  if(window._wsOk)return;
   fetch('/api/telem').then(function(r){return r.json();}).then(function(d){
-    var lv=document.getElementById('live');
-    lv.textContent='● LIVE';lv.style.color='#00e676';
-    document.getElementById('mval').textContent=(d.mode||'---');
-    var ae=document.getElementById('armd');
-    if(d.armed){ae.textContent='ARMED';ae.style.color='#00e676';}
-    else{ae.textContent='DISARMED';ae.style.color='#444';}
-    var f=function(v,n){return(typeof v==='number')?v.toFixed(n===undefined?1:n):'---';};
-    document.getElementById('troll').textContent=f(d.roll)+'*';
-    document.getElementById('tpitch').textContent=f(d.pitch)+'*';
-    document.getElementById('tyaw').textContent=f(d.yaw)+'*';
-    document.getElementById('talt').textContent=typeof d.alt_cm==='number'?d.alt_cm+'cm':'---';
-    document.getElementById('tbat').textContent=typeof d.bat_mv==='number'?(d.bat_mv/1000).toFixed(2)+'V':'---';
-    if(d.last_ack){try{var a=JSON.parse(d.last_ack);var ab=document.getElementById('ackbar');ab.style.display='block';ab.textContent='FC: '+a.ack+' '+a.status+(a.msg?' — '+a.msg:'');clearTimeout(window._ackTm);window._ackTm=setTimeout(function(){ab.style.display='none';},6000);}catch(e){}}
-    // pre-flight panel
-    var _G='#00e676',_R='#ff3b3b',_Y='#ffcc00',_U='#444';
-    if(typeof d.imu_ok==='number'){var ie=document.getElementById('pfImu');ie.textContent=d.imu_ok?'PASS':'FAIL';ie.style.color=d.imu_ok?_G:_R;}
-    if(typeof d.sonar_ok==='number'){var se=document.getElementById('pfSon');se.textContent=d.sonar_ok?'PASS':'STALE';se.style.color=d.sonar_ok?_G:_Y;}
-    if(typeof d.bat_mv==='number'&&d.bat_mv>0){var bv=d.bat_mv/1000,be=document.getElementById('pfBat');be.textContent=bv.toFixed(2)+'V'+(d.bat_mv<9900?' CRITICAL':d.bat_mv<10500?' LOW':'');be.style.color=d.bat_mv>10500?_G:d.bat_mv>9900?_Y:_R;}
-    var ge=document.getElementById('pfGps');if(d.gps_fix){ge.textContent='FIX ('+d.gps_sats+' sat)';ge.style.color=_G;}else{ge.textContent='NO FIX — press GPS button';ge.style.color=_U;}
-    var me=document.getElementById('pfMod');if(me)me.textContent=d.mode||'---';
-    if(typeof d.roll==='number')drawAti(d.roll||0,d.pitch||0);
-    if(d.gps_lat&&d.gps_lat!==0){
-      document.getElementById('glat').textContent=d.gps_lat.toFixed(6);
-      document.getElementById('glon').textContent=d.gps_lon.toFixed(6);
-      document.getElementById('gfix').textContent=(d.gps_fix?'FIX':'---')+'/'+(d.gps_sats||0);
-      navPhoneLat=d.gps_lat;navPhoneLon=d.gps_lon;
-    }
-    window._lastHdg=typeof d.yaw==='number'?d.yaw:0;
-    navUpdateSvg(window._lastHdg,null);
-    navUpdateTrn(d);
+    applyTelem(d);
   }).catch(function(){
     var lv=document.getElementById('live');
     lv.textContent='● OFFLINE';lv.style.color='#444';
@@ -584,6 +649,18 @@ function pollTelem(){
 }
 setInterval(pollTelem,1000);
 pollTelem();
+
+// WebSocket for real-time push (no polling lag when WS is up)
+window._wsOk=false;
+function connectWS(){
+  try{
+    var ws=new WebSocket('ws://'+location.hostname+':81/');
+    ws.onopen=function(){window._wsOk=true;};
+    ws.onmessage=function(e){try{applyTelem(JSON.parse(e.data));}catch(_){}};
+    ws.onclose=ws.onerror=function(){window._wsOk=false;ws=null;setTimeout(connectWS,3000);};
+  }catch(_){window._wsOk=false;setTimeout(connectWS,5000);}
+}
+connectWS();
 
 var mtMot='FL';
 function mtSel(m){
@@ -750,6 +827,82 @@ function tryOverride(){
   }).catch(function(){});
 }
 
+// ── Priority lock prompt ──
+var _pendCmd=null,_pendExtra=null;
+function showLock(cmd,extra){_pendCmd=cmd;_pendExtra=extra;document.getElementById('lockoverlay').style.display='flex';document.getElementById('lockPass').value='';document.getElementById('lockMsg').textContent='';}
+function hideLock(){document.getElementById('lockoverlay').style.display='none';}
+function doUnlock(){
+  var p=document.getElementById('lockPass').value;
+  if(!p)return;
+  fetch('/api/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pass:p})})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.ok){hideLock();if(_pendCmd)sc(_pendCmd,_pendExtra);}
+      else{var m=document.getElementById('lockMsg');m.textContent='Wrong code';setTimeout(function(){m.textContent='';},2000);}
+    }).catch(function(){});
+}
+
+// ── Alt setpoint panel ──
+function togAlt(){var d=document.getElementById('altpanel');d.style.display=(d.style.display==='block')?'none':'block';}
+function setAlt(){sc('ALT_HOLD',{alt_cm:parseInt(document.getElementById('altSldr').value)});}
+
+// ── Path builder ──
+var pathWps=[{x:100,y:100}];
+function pathDraw(){
+  var svg=document.getElementById('pathSvg');
+  var grid=document.getElementById('pathGrid');
+  var lines=document.getElementById('pathLines');
+  var dots=document.getElementById('pathDots');
+  grid.innerHTML='';lines.innerHTML='';dots.innerHTML='';
+  for(var x=0;x<=200;x+=20){grid.innerHTML+='<line x1="'+x+'" y1="0" x2="'+x+'" y2="200" stroke="#151515" stroke-width="0.5"/>';}
+  for(var y=0;y<=200;y+=20){grid.innerHTML+='<line x1="0" y1="'+y+'" x2="200" y2="'+y+'" stroke="#151515" stroke-width="0.5"/>';}
+  for(var i=1;i<pathWps.length;i++){
+    var a=pathWps[i-1],b=pathWps[i];
+    lines.innerHTML+='<line x1="'+a.x+'" y1="'+a.y+'" x2="'+b.x+'" y2="'+b.y+'" stroke="#00e5ff" stroke-width="1.5" marker-end="url(#arr)"/>';
+  }
+  for(var i=0;i<pathWps.length;i++){
+    var col=i===0?'#00e676':i===pathWps.length-1?'#ff3b3b':'#ffcc00';
+    dots.innerHTML+='<circle cx="'+pathWps[i].x+'" cy="'+pathWps[i].y+'" r="4" fill="'+col+'"/><text x="'+(pathWps[i].x+6)+'" y="'+(pathWps[i].y+4)+'" fill="'+col+'" font-size="7" font-family="Consolas,monospace">'+i+'</text>';
+  }
+  var sc=parseInt(document.getElementById('pathScale').value)||2;
+  var segs=pathSegs();
+  var tot=segs.reduce(function(a,s){return a+s.dist_m;},0);
+  document.getElementById('pathInfo').textContent=segs.length>0?(pathWps.length-1)+' waypoints | '+tot.toFixed(0)+'m total':'Tap map to start';
+}
+function pathSvgCoords(e){
+  var el=document.getElementById('pathSvg');
+  var rect=el.getBoundingClientRect();
+  var scX=200/rect.width,scY=200/rect.height;
+  return{x:Math.round((e.clientX-rect.left)*scX),y:Math.round((e.clientY-rect.top)*scY)};
+}
+function pathTap(e){var p=pathSvgCoords(e);pathWps.push(p);pathDraw();}
+function pathTouch(e){e.preventDefault();if(e.changedTouches.length){var t=e.changedTouches[0];var p=pathSvgCoords(t);pathWps.push(p);pathDraw();}}
+function pathSegs(){
+  var sc=parseInt(document.getElementById('pathScale').value)||2;
+  var segs=[];
+  for(var i=1;i<pathWps.length;i++){
+    var dx=(pathWps[i].x-pathWps[i-1].x)*sc;
+    var dy=-(pathWps[i].y-pathWps[i-1].y)*sc;
+    var dist=Math.sqrt(dx*dx+dy*dy);
+    var bear=((Math.atan2(dx,dy)*180/Math.PI)+360)%360;
+    segs.push({bearing:parseFloat(bear.toFixed(1)),dist_m:parseFloat(dist.toFixed(1)),speed:0.5});
+  }
+  return segs;
+}
+function pathExec(){
+  var segs=pathSegs();
+  if(!segs.length){document.getElementById('pathInfo').textContent='Add at least 1 waypoint first';return;}
+  sc('PRESET',{segments:segs});
+  document.getElementById('pathInfo').textContent='Sent '+segs.length+' segment(s) to FC';
+}
+function pathClear(){pathWps=[{x:100,y:100}];pathDraw();}
+function togPath(){
+  var d=document.getElementById('pathpanel');
+  var show=d.style.display!=='block';
+  d.style.display=show?'block':'none';
+  if(show)pathDraw();
+}
+pathDraw();
+
 function gpsStart(){
   var btn=document.getElementById('gpsbtn');
   if(!navigator.geolocation){
@@ -799,6 +952,12 @@ bool          phoneWasConn = false;
 String lastTelemJson = "";   // latest FC telemetry JSON — served to web GCS
 String lastAckJson   = "";   // latest FC ACK JSON — piggybacked on /api/telem
 
+WebSocketsServer wsServer(81);   // WS port 81 — push telem to phone browser
+
+bool webGcsLocked   = false;   // true when Python GCS is connected on TCP
+bool webGcsUnlocked = false;   // true after priority/master code entered
+bool gcsPrevConn    = false;   // edge-detect for GCS connect/disconnect
+
 // ─────────────────────────────────────────────────────────────
 //  HTTP WEB GCS  (full GCS in phone browser — no laptop required)
 // ─────────────────────────────────────────────────────────────
@@ -806,13 +965,10 @@ void handleRoot() {
   httpServer.send_P(200, "text/html", GCS_PAGE);
 }
 
-// GET /api/telem — returns last FC telemetry merged with GPS and ESP32 state
-void handleWebTelem() {
-  if (lastTelemJson.length() == 0) {
-    httpServer.send(200, "application/json",
-                    "{\"mode\":\"DISCONNECTED\",\"armed\":0}");
-    return;
-  }
+// Build merged telem JSON (telem + GPS + lock state) — used by HTTP and WS
+String buildMergedTelem() {
+  if (lastTelemJson.length() == 0)
+    return F("{\"mode\":\"DISCONNECTED\",\"armed\":0}");
   StaticJsonDocument<512> doc;
   deserializeJson(doc, lastTelemJson);
   doc["gps_lat"]  = gps.lat;
@@ -821,18 +977,35 @@ void handleWebTelem() {
   doc["gps_sats"] = gps.sats;
   doc["gps_hdg"]  = gps.heading;
   doc["dms_ok"]   = !dmsFired;
-  if (lastAckJson.length() > 0) {
-    doc["last_ack"] = lastAckJson;
-    lastAckJson = "";
-  }
+  doc["gcs_lock"] = (webGcsLocked && !webGcsUnlocked) ? 1 : 0;
   String out;
   serializeJson(doc, out);
-  httpServer.send(200, "application/json", out);
+  return out;
+}
+
+// GET /api/telem — returns last FC telemetry merged with GPS and ESP32 state
+void handleWebTelem() {
+  String body = buildMergedTelem();
+  if (lastAckJson.length() > 0) {
+    StaticJsonDocument<512> doc;
+    deserializeJson(doc, body);
+    doc["last_ack"] = lastAckJson;
+    lastAckJson = "";
+    body = "";
+    serializeJson(doc, body);
+  }
+  httpServer.send(200, "application/json", body);
 }
 
 // POST /api/cmd — forwards command JSON to FC, resets ESP32 DMS
 void handleWebCmd() {
   if (!httpServer.hasArg("plain")) { httpServer.send(400); return; }
+  // Priority lock: block web GCS commands when Python GCS is on TCP unless unlocked
+  if (webGcsLocked && !webGcsUnlocked) {
+    httpServer.send(200, "application/json",
+      "{\"ok\":0,\"locked\":1,\"reason\":\"Python GCS active — enter priority code\"}");
+    return;
+  }
   String body = httpServer.arg("plain");
   lastPing = millis();
   dmsFired = false;
@@ -841,7 +1014,7 @@ void handleWebCmd() {
     const char* cmd = doc["cmd"];
     if (cmd) {
       Serial.printf("[WEB→FC] %s\n", cmd);
-      sendToFC(body);   // forward every command (incl. PING) to FC to keep FC DMS alive
+      sendToFC(body);
     }
   }
   httpServer.send(200, "application/json", "{\"ok\":1}");
@@ -879,19 +1052,36 @@ void handleAuth() {
   if (deserializeJson(req, httpServer.arg("plain")) != DeserializationError::Ok) {
     httpServer.send(400); return;
   }
-  bool ok = strcmp(req["pass"] | "", ADMIN_PASS) == 0;
+  const char* p = req["pass"] | "";
+  bool ok = (strcmp(p, ADMIN_PASS) == 0 || strcmp(p, MASTER_PASS) == 0);
+  httpServer.send(200, "application/json", ok ? "{\"ok\":1}" : "{\"ok\":0}");
+}
+
+// POST /api/unlock — accepts priority or master code to override priority lock
+void handleUnlock() {
+  if (!httpServer.hasArg("plain")) { httpServer.send(400); return; }
+  StaticJsonDocument<64> req;
+  if (deserializeJson(req, httpServer.arg("plain")) != DeserializationError::Ok) {
+    httpServer.send(400); return;
+  }
+  const char* p = req["pass"] | "";
+  bool ok = (strcmp(p, PRIORITY_PASS) == 0 || strcmp(p, MASTER_PASS) == 0);
+  if (ok) webGcsUnlocked = true;
   httpServer.send(200, "application/json", ok ? "{\"ok\":1}" : "{\"ok\":0}");
 }
 
 void setupHTTP() {
-  httpServer.on("/",          HTTP_GET,  handleRoot);
-  httpServer.on("/api/telem", HTTP_GET,  handleWebTelem);
-  httpServer.on("/api/cmd",   HTTP_POST, handleWebCmd);
-  httpServer.on("/gps",       HTTP_POST, handleGpsPost);
-  httpServer.on("/status",    HTTP_GET,  handleStatus);
-  httpServer.on("/api/auth",  HTTP_POST, handleAuth);
+  httpServer.on("/",           HTTP_GET,  handleRoot);
+  httpServer.on("/api/telem",  HTTP_GET,  handleWebTelem);
+  httpServer.on("/api/cmd",    HTTP_POST, handleWebCmd);
+  httpServer.on("/gps",        HTTP_POST, handleGpsPost);
+  httpServer.on("/status",     HTTP_GET,  handleStatus);
+  httpServer.on("/api/auth",   HTTP_POST, handleAuth);
+  httpServer.on("/api/unlock", HTTP_POST, handleUnlock);
   httpServer.begin();
-  Serial.println("[HTTP ] Web GCS at http://192.168.4.1/");
+  wsServer.begin();
+  wsServer.onEvent([](uint8_t, WStype_t, uint8_t*, size_t){});
+  Serial.println("[HTTP ] Web GCS http://192.168.4.1/  WS ws://192.168.4.1:81/");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -935,6 +1125,7 @@ void setup() {
 // ─────────────────────────────────────────────────────────────
 void loop() {
   httpServer.handleClient();
+  wsServer.loop();
   acceptClients();
   readGCS();
   readPhone();
@@ -948,7 +1139,14 @@ void loop() {
 //  CLIENT ACCEPT
 // ─────────────────────────────────────────────────────────────
 void acceptClients() {
-  if (!gcsClient || !gcsClient.connected()) {
+  bool gcsNowConn = (gcsClient && gcsClient.connected());
+  if (!gcsNowConn && gcsPrevConn) {
+    // Python GCS just disconnected — release priority lock
+    webGcsLocked   = false;
+    webGcsUnlocked = false;
+    Serial.println("[GCS  ] Disconnected — web GCS lock released");
+  }
+  if (!gcsNowConn) {
     WiFiClient c = gcsServer.available();
     if (c) {
       if (gcsClient) gcsClient.stop();
@@ -958,11 +1156,16 @@ void acceptClients() {
       lastPing = millis();
       dmsArmed = true;
       dmsFired = false;
-      Serial.printf("[GCS  ] Connected from %s\n",
+      // Python GCS connected — lock web GCS (force priority code to override)
+      webGcsLocked   = true;
+      webGcsUnlocked = false;
+      gcsNowConn = true;
+      Serial.printf("[GCS  ] Connected from %s — web GCS locked\n",
                     gcsClient.remoteIP().toString().c_str());
       sendToGCS("{\"info\":\"GCS_CONNECTED\"}");
     }
   }
+  gcsPrevConn = gcsNowConn;
 
   bool phoneNowConn = (phoneClient && phoneClient.connected());
   if (phoneWasConn && !phoneNowConn) {
@@ -1030,8 +1233,11 @@ void readFC() {
     if (ch == '\n') {
       bufFC.trim();
       if (bufFC.length() > 0) {
-        if (bufFC.indexOf("\"roll\"") >= 0) lastTelemJson = bufFC;
-        if (bufFC.indexOf("\"ack\"")  >= 0) lastAckJson   = bufFC;
+        if (bufFC.indexOf("\"roll\"") >= 0) {
+          lastTelemJson = bufFC;
+          wsServer.broadcastTXT(buildMergedTelem());
+        }
+        if (bufFC.indexOf("\"ack\"")  >= 0) lastAckJson = bufFC;
         sendToGCS(bufFC);
       }
       bufFC = "";

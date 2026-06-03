@@ -445,6 +445,19 @@ void handleCmd(const String& line) {
     return;
   }
 
+  // ── ALT_HOLD  {"cmd":"ALT_HOLD","alt_cm":150}
+  if (!strcmp(cmd, "ALT_HOLD")) {
+    if (mode == MODE_DISARMED || mode == MODE_KILL) {
+      ack("ALT_HOLD", false, "not armed"); return;
+    }
+    float a = doc["alt_cm"] | target_alt;
+    target_alt = constrain(a, 30.0f, 500.0f);
+    char mbuf[32];
+    snprintf(mbuf, sizeof(mbuf), "target=%dcm", (int)target_alt);
+    ack("ALT_HOLD", true, mbuf);
+    return;
+  }
+
   // ── LAND ──────────────────────────────────────────────────
   if (!strcmp(cmd, "LAND")) {
     if (mode == MODE_DISARMED || mode == MODE_KILL) {
