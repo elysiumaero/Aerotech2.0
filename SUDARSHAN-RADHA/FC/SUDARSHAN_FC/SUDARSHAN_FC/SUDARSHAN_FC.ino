@@ -186,6 +186,8 @@ unsigned long lastLoopUs  = 0;
 unsigned long lastCmdMs   = 0;
 unsigned long landTimer   = 0;
 unsigned long loopCount   = 0;
+unsigned long lastMotorTestMs = 0;   // rate-limit MOTOR_TEST to once per 5s
+unsigned long lastCalEscMs    = 0;   // rate-limit CAL_ESC to once per 10s
 
 // UART receive buffer — fixed size prevents heap fragmentation
 static char uartBuf[256];
@@ -350,7 +352,15 @@ void escsKill() {
 
 void escsArm() {
   escsKill();
-  delay(2500);  // hold min throttle for ESC arming beeps
+  // Hold 1000µs for 2.5 s while draining UART every 50ms.
+  // Without the drain the 64-byte hardware FIFO fills in ~5ms at 115200 baud,
+  // causing GPS/ACK bytes from the ESP32 to be silently lost for the entire
+  // arming window and leaving the GCS out of sync.
+  unsigned long t0 = millis();
+  while (millis() - t0 < 2500UL) {
+    while (ESP_SERIAL.available()) ESP_SERIAL.read();
+    delay(50);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -427,6 +437,10 @@ void handleCmd(const String& line) {
 
   // ── FORCE_ARM  (admin password override — bypasses all pre-flight checks) ──
   if (!strcmp(cmd, "FORCE_ARM")) {
+    const char* confirm = doc["confirm"] | "";
+    if (strcmp(confirm, "FORCE_ARM") != 0) {
+      ack("FORCE_ARM", false, "missing confirm:FORCE_ARM field"); return;
+    }
     if (mode != MODE_DISARMED) { ack("FORCE_ARM", false, "already armed"); return; }
     home_lat = gps_lat;  home_lon = gps_lon;
     pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
@@ -454,6 +468,7 @@ void handleCmd(const String& line) {
     }
     pidRoll.reset(); pidPitch.reset(); pidYaw.reset(); pidAlt.reset();
     mode      = MODE_HOVER;
+    landCount = 0;   // clear any residual from previous LAND sequence
     sp_roll=0; sp_pitch=0; sp_yaw=yaw_gyro;
     target_alt = alt_cm;
     ack("HOVER", true);
@@ -503,7 +518,13 @@ void handleCmd(const String& line) {
     sp_roll   = doc["roll"]     | 0.0f;
     sp_pitch  = doc["pitch"]    | 0.0f;
     sp_yaw    = doc["yaw"]      | sp_yaw;
-    base_thr  = doc["throttle"] | ESC_IDLE;
+    {
+      int reqThr = constrain(doc["throttle"] | base_thr, ESC_MIN, ESC_MAX);
+      const int MAX_STEP = 50;   // max µs change per OVERRIDE command — prevents sudden full-throttle
+      if (reqThr > base_thr + MAX_STEP) reqThr = base_thr + MAX_STEP;
+      if (reqThr < base_thr - MAX_STEP) reqThr = base_thr - MAX_STEP;
+      base_thr = reqThr;
+    }
     return;
   }
 
@@ -534,6 +555,10 @@ void handleCmd(const String& line) {
   // Only accepted in DISARMED state — for bench testing with props OFF.
   if (!strcmp(cmd, "MOTOR_TEST")) {
     if (mode != MODE_DISARMED) { ack("MOTOR_TEST", false, "must be DISARMED"); return; }
+    if (millis() - lastMotorTestMs < 5000UL) {
+      ack("MOTOR_TEST", false, "rate limit: 5s between tests"); return;
+    }
+    lastMotorTestMs = millis();
     const char* motor = doc["motor"] | "FL";
     int  thr = constrain(doc["throttle"]    | 1100, ESC_MIN, 1200);  // hard cap 1200µs
     unsigned long dur = constrain((unsigned long)(doc["duration_ms"] | 1000),
@@ -545,9 +570,9 @@ void handleCmd(const String& line) {
     else if (!strcmp(motor, "RR")) rr = (uint16_t)thr;
     else { ack("MOTOR_TEST", false, "bad motor"); return; }
     escsKill();
-    delay(500);
-    sendMotors(fl, fr, rl, rr);   // only selected motor gets thr; others stay at ESC_ARM
-    delay(dur);        // blocking OK — drone is DISARMED on bench
+    { unsigned long _t=millis(); while(millis()-_t<500) { while(ESP_SERIAL.available())ESP_SERIAL.read(); delay(20); } }
+    sendMotors(fl, fr, rl, rr);
+    { unsigned long _t=millis(); while(millis()-_t<dur) { while(ESP_SERIAL.available())ESP_SERIAL.read(); delay(20); } }
     escsKill();
     ack("MOTOR_TEST", true, motor);
     return;
@@ -563,9 +588,10 @@ void handleCmd(const String& line) {
     unsigned long dur = constrain((unsigned long)(doc["dur"] | 2000), 500UL, 3000UL);
     uint16_t v[4] = {ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM};
     v[ch] = (uint16_t)thr;
-    escsKill(); delay(300);
+    escsKill();
+    { unsigned long _t=millis(); while(millis()-_t<300) { while(ESP_SERIAL.available())ESP_SERIAL.read(); delay(20); } }
     sendMotors(v[0], v[1], v[2], v[3]);
-    delay(dur);
+    { unsigned long _t=millis(); while(millis()-_t<dur) { while(ESP_SERIAL.available())ESP_SERIAL.read(); delay(20); } }
     escsKill();
     ack("SPIN_CH", true);
     return;
@@ -591,12 +617,16 @@ void handleCmd(const String& line) {
   // throttle → ESC confirms. Run once per ESC, props OFF.
   if (!strcmp(cmd, "CAL_ESC")) {
     if (mode != MODE_DISARMED) { ack("CAL_ESC", false, "must be DISARMED"); return; }
+    if (millis() - lastCalEscMs < 10000UL) {
+      ack("CAL_ESC", false, "rate limit: 10s between calibrations"); return;
+    }
+    lastCalEscMs = millis();
     DBG_SERIAL.println(F("[ESC ] CAL — sending 2000us (listen for double-beep)..."));
     sendMotors(2000, 2000, 2000, 2000);
-    delay(3000);
+    { unsigned long _t=millis(); while(millis()-_t<3000) { while(ESP_SERIAL.available())ESP_SERIAL.read(); delay(50); } }
     DBG_SERIAL.println(F("[ESC ] CAL — sending 1000us (listen for confirm beeps)..."));
     sendMotors(ESC_ARM, ESC_ARM, ESC_ARM, ESC_ARM);
-    delay(3000);
+    { unsigned long _t=millis(); while(millis()-_t<3000) { while(ESP_SERIAL.available())ESP_SERIAL.read(); delay(50); } }
     DBG_SERIAL.println(F("[ESC ] CAL done"));
     ack("CAL_ESC", true, "ESCs calibrated — cycle power to confirm");
     return;
@@ -627,6 +657,11 @@ void handleCmd(const String& line) {
     ack("PRESET", true);
     return;
   }
+
+  // Unknown command — log and reject rather than silently ignore
+  DBG_SERIAL.print(F("[SEC ] Rejected unknown cmd: "));
+  DBG_SERIAL.println(cmd);
+  ack(cmd, false, "unknown command");
 }
 
 // ─────────────────────────────────────────────────────────────

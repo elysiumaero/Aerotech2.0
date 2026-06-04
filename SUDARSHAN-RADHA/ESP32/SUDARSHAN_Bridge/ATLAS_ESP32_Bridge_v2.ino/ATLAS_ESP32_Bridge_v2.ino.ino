@@ -949,6 +949,8 @@ unsigned long lastGpsFwd     = 0;
 bool          dmsArmed       = false;
 bool          dmsFired       = false;
 bool          phoneWasConn   = false;
+unsigned long lastWebCmdMs   = 0;
+const uint32_t WEB_CMD_MIN_MS = 150;   // ~6 commands/sec max from web GCS
 
 String lastTelemJson = "";   // latest FC telemetry JSON — served to web GCS
 String lastAckJson   = "";   // latest FC ACK JSON — piggybacked on /api/telem
@@ -998,8 +1000,29 @@ void handleWebTelem() {
   httpServer.send(200, "application/json", body);
 }
 
+// Returns true if the JSON body contains a known-safe command name.
+// Prevents unknown/crafted JSON from reaching the FC UART.
+static bool isAllowedCmd(const String& body) {
+  static const char* const ALLOW[] = {
+    "\"ARM\"","\"DISARM\"","\"HOVER\"","\"LAND\"","\"KILL\"",
+    "\"PING\"","\"OVERRIDE\"","\"ALT_HOLD\"","\"PRESET\"",
+    "\"MOTOR_TEST\"","\"SPIN_CH\"","\"SET_MOTOR_MAP\"",
+    "\"CAL_ESC\"","\"GPS\"","\"FORCE_ARM\""
+  };
+  for (const char* a : ALLOW) {
+    if (body.indexOf(a) >= 0) return true;
+  }
+  return false;
+}
+
 // POST /api/cmd — forwards command JSON to FC, resets ESP32 DMS
 void handleWebCmd() {
+  uint32_t nowMs = millis();
+  if (nowMs - lastWebCmdMs < WEB_CMD_MIN_MS) {
+    httpServer.send(429, "application/json", "{\"ok\":0,\"err\":\"rate_limit\"}");
+    return;
+  }
+  lastWebCmdMs = nowMs;
   if (!httpServer.hasArg("plain")) { httpServer.send(400); return; }
   // Priority lock: block web GCS commands when Python GCS is on TCP unless unlocked
   if (webGcsLocked && !webGcsUnlocked) {
@@ -1008,6 +1031,10 @@ void handleWebCmd() {
     return;
   }
   String body = httpServer.arg("plain");
+  if (!isAllowedCmd(body)) {
+    httpServer.send(400, "application/json", "{\"ok\":0,\"err\":\"cmd_not_allowed\"}");
+    return;
+  }
   lastPing = millis();
   dmsFired = false;
   StaticJsonDocument<256> doc;
@@ -1125,9 +1152,9 @@ void setup() {
 //  LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
+  acceptClients();          // update lock state BEFORE serving HTTP requests
   httpServer.handleClient();
   wsServer.loop();
-  acceptClients();
   readGCS();
   readPhone();
   readFC();
@@ -1267,6 +1294,8 @@ void onGCSLine(const String& line) {
   dmsFired = false;
 
   if (strcmp(cmd, "PING") == 0) return;  // DMS reset only, not forwarded
+
+  if (!isAllowedCmd(line)) return;   // drop unknown commands before they reach FC
 
   Serial.printf("[GCS→FC] %s\n", cmd);
   sendToFC(line);
