@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Certification Examination — SUDARSHAN UAV{% endblock %}
+
+{% block content %}
+<div id="timer-bar">
+  <span id="timer-label">SUDARSHAN UAV Operator Certification &mdash; Time Remaining</span>
+  <span id="timer-display">30:00</span>
+</div>
+
+<form method="post" action="/submit" id="test-form">
+  {% for q in questions %}
+  <div class="q-block" id="qblock-{{ q.id }}">
+    <div class="q-meta">
+      <span class="q-num">Q{{ loop.index }}&nbsp;/&nbsp;{{ total }}</span>
+      <span class="q-sec">{{ q.section }}</span>
+    </div>
+    <div class="q-text">{{ q.text }}</div>
+    <div class="options">
+      {% for opt in q.options %}
+      <label>
+        <input type="radio" name="q{{ q.id }}" value="{{ loop.index0 }}">
+        <span><strong>{{ ['A','B','C','D'][loop.index0] }}.</strong>&nbsp;{{ opt }}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div style="text-align:center; margin-top:28px; padding-bottom:20px;">
+    <button class="btn btn-primary" type="submit" id="submit-btn">
+      Submit Examination (0/{{ total }} answered)
+    </button>
+    <p style="color:var(--dim); font-size:0.78rem; margin-top:10px;">
+      Answer all questions before submitting. The exam auto-submits when the timer reaches 00:00.
+    </p>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='test.js') }}"></script>
+{% endblock %}

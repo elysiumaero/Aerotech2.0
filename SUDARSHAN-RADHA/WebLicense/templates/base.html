@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}SUDARSHAN UAV Operator Licensing{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <div class="header-band">
+      <span class="org-name">ELYSIUM AEROTECH</span>
+      <span class="org-sub">SUDARSHAN UAV · Operator Licensing Portal</span>
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    Elysium Aerotech &nbsp;·&nbsp; Advanced Unmanned Aerial Systems &nbsp;·&nbsp; India
+    &nbsp;·&nbsp; Certified Hardware &amp; Research &amp; Development
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Examination Result — SUDARSHAN UAV{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-title">Examination Result — {{ attempt['name'] }}</div>
+
+  <div class="score-big {% if attempt['passed'] %}score-pass{% else %}score-fail{% endif %}">
+    {{ attempt['score'] }}&nbsp;/&nbsp;{{ attempt['total'] }}
+  </div>
+
+  <div class="progress-wrap">
+    <div class="progress-fill {% if attempt['passed'] %}pass{% else %}fail{% endif %}"
+         style="width: {{ pct }}%"></div>
+  </div>
+
+  <p style="text-align:center; color:var(--dim); margin-bottom:20px;">
+    {{ pct }}%
+    &nbsp;&mdash;&nbsp;
+    {% if attempt['passed'] %}
+      <span class="badge-pass">PASSED</span>
+      &nbsp;(pass mark: {{ pass_score }}/{{ attempt['total'] }})
+    {% else %}
+      <span class="badge-fail">FAILED</span>
+      &nbsp;(required: {{ pass_score }}/{{ attempt['total'] }})
+    {% endif %}
+  </p>
+
+  {% if attempt['passed'] %}
+  <div class="alert alert-info">
+    Congratulations, <strong>{{ attempt['name'] }}</strong>!
+    You have passed the SUDARSHAN UAV Operator Certification Examination.
+    Create your GCS login credentials below to receive your signed Operator License.
+  </div>
+  <div style="text-align:center; margin-top:8px;">
+    <a href="/signup/{{ attempt['id'] }}" class="btn btn-gold">
+      Create GCS Account &amp; Download License &rarr;
+    </a>
+  </div>
+  {% else %}
+  <div class="alert alert-warn">
+    You scored <strong>{{ attempt['score'] }}/{{ attempt['total'] }} ({{ pct }}%)</strong>.
+    The pass mark is <strong>{{ pass_score }}/{{ attempt['total'] }}</strong>.
+    You may re-sit the examination after <strong>{{ cooldown_days }} days</strong>.
+  </div>
+  <div style="text-align:center; margin-top:8px;">
+    <a href="/" class="btn btn-outline">Return to Home</a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card" style="font-size:0.82rem; color:var(--dim);">
+  <strong style="color:var(--text);">Exam details</strong>
+  <ul style="padding-left:18px; margin-top:8px; line-height:1.9;">
+    <li>Candidate: {{ attempt['name'] }} ({{ attempt['email'] }})</li>
+    <li>Date taken: {{ attempt['taken_at'][:16] if attempt['taken_at'] else '—' }} UTC</li>
+    <li>Score: {{ attempt['score'] }} / {{ attempt['total'] }}</li>
+    <li>Result: {% if attempt['passed'] %}<span class="badge-pass">PASS</span>{% else %}<span class="badge-fail">FAIL</span>{% endif %}</li>
+  </ul>
+</div>
+{% endblock %}
