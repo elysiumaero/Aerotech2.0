@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Start Examination — SUDARSHAN UAV Licensing{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-title">SUDARSHAN UAV Operator Certification</div>
+
+  <p style="color:var(--dim); line-height:1.7; margin-bottom:18px; font-size:0.9rem;">
+    Complete the 20-question certification examination to earn your
+    <strong style="color:var(--text);">Elysium Aerotech Operator License</strong>
+    for the SUDARSHAN UAV platform. A score of
+    <strong style="color:var(--cyan);">{{ pass_score }}/20 (70%)</strong> or above is required.
+    Failed attempts enforce a <strong style="color:var(--gold);">3-day cooldown</strong> before re-sitting.
+  </p>
+
+  {% if cooldown %}
+  <div class="alert alert-warn">
+    Your most recent attempt did not reach the pass mark.
+    You may re-sit the examination on <strong>{{ eligible }}</strong>.
+  </div>
+  {% endif %}
+
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  {% if not cooldown %}
+  <form method="post" action="/test">
+    <label>
+      Full Name
+      <input type="text" name="name" required
+             placeholder="e.g. Arjun Sharma" autocomplete="name">
+    </label>
+    <label>
+      Email Address
+      <input type="email" name="email" required
+             placeholder="you@example.com" autocomplete="email">
+    </label>
+    <div style="margin-top:6px;">
+      <button class="btn btn-primary" type="submit">Begin Examination &rarr;</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card" style="font-size:0.85rem; color:var(--dim);">
+  <div class="card-title">Examination Overview</div>
+  <ul style="padding-left:18px; line-height:2;">
+    <li>20 multiple-choice questions, one correct answer each.</li>
+    <li>30-minute time limit — the exam auto-submits on expiry.</li>
+    <li>Topics: Hardware &amp; Wiring &nbsp;·&nbsp; Flight Controller
+        &nbsp;·&nbsp; Communications &amp; Protocols
+        &nbsp;·&nbsp; Safety &amp; Emergency &nbsp;·&nbsp; Operations.</li>
+    <li>Passing score: <strong style="color:var(--cyan);">{{ pass_score }}/20</strong>.
+        On pass, a GCS account and signed PDF license are issued immediately.</li>
+    <li>Failed attempts lock the account for 3 calendar days.</li>
+  </ul>
+</div>
+{% endblock %}

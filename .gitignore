@@ -47,3 +47,8 @@ Desktop.ini
 
 # ── Zip archives (re-generate from source) ────────────────────
 *.zip
+
+# WebLicense runtime artifacts
+SUDARSHAN-RADHA/WebLicense/weblicense.db
+SUDARSHAN-RADHA/WebLicense/licenses/
+SUDARSHAN-RADHA/GCS/auth.json

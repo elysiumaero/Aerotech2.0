@@ -50,6 +50,35 @@ except ImportError:
     AES_KEY         = "your32hexcharkey0000000000000000"
     ENCRYPT_ENABLED = False
 
+_CMD_LIMITS: dict = {
+    "roll":     (-45.0,  45.0),
+    "pitch":    (-45.0,  45.0),
+    "yaw":      (-180.0, 180.0),
+    "throttle": (1050,   1950),
+    "alt_cm":   (30,     500),
+    "dist_m":   (0.1,    500.0),
+    "speed":    (0.1,    1.0),
+    "bearing":  (0.0,    360.0),
+}
+
+def _sanitise_cmd(payload: dict) -> dict:
+    """Clamp all numeric command fields to safe hardware limits."""
+    out = dict(payload)
+    for k, (lo, hi) in _CMD_LIMITS.items():
+        if k in out and isinstance(out[k], (int, float)):
+            out[k] = max(lo, min(hi, out[k]))
+    if "segments" in out and isinstance(out["segments"], list):
+        segs = []
+        for seg in out["segments"]:
+            if isinstance(seg, dict):
+                s = dict(seg)
+                for k, (lo, hi) in _CMD_LIMITS.items():
+                    if k in s and isinstance(s[k], (int, float)):
+                        s[k] = max(lo, min(hi, s[k]))
+                segs.append(s)
+        out["segments"] = segs[:16]
+    return out
+
 AUTH_FILE    = os.path.join(os.path.dirname(__file__), "auth.json")
 GPS_TLS_CERT = os.path.join(os.path.dirname(__file__), "gcs_tls_cert.pem")
 GPS_TLS_KEY  = os.path.join(os.path.dirname(__file__), "gcs_tls_key.pem")
@@ -502,6 +531,7 @@ class ConnectionManager:
         if not self._sock:
             return False
         try:
+            payload = _sanitise_cmd(payload)
             raw  = json.dumps(payload)
             data = self._crypto.encrypt(raw) if self._crypto else (raw + "\n").encode()
             with self._lock:
@@ -916,6 +946,7 @@ class RADHAApp:
         self.root.geometry("1160x700")
         self.root.minsize(960, 580)
 
+        self._state_lock         = threading.RLock()
         self._armed              = False
         self._preset_segs        = []
         self._gps_vars           = {}
@@ -1699,7 +1730,9 @@ class RADHAApp:
             self._log("No segments defined", WARN); return
         if not self.conn.connected:
             self._log("Not connected", DANGER); return
-        if not self._armed:
+        with self._state_lock:
+            armed = self._armed
+        if not armed:
             self._log("Arm the drone first", WARN); return
         if self.conn.send({"cmd": "PRESET", "segments": self._preset_segs}):
             self._log(f"PRESET → {len(self._preset_segs)} segments sent", SUCCESS)
@@ -1807,7 +1840,9 @@ class RADHAApp:
     def _set_alt(self):
         if not self.conn.connected:
             self._log("Not connected", DANGER); return
-        if not self._armed:
+        with self._state_lock:
+            armed = self._armed
+        if not armed:
             self._log("Arm the drone first", WARN); return
         tgt = self._alt_target_var.get() if self._alt_target_var else 100
         if self.conn.send({"cmd": "ALT_HOLD", "alt_cm": tgt}):
@@ -1888,7 +1923,8 @@ class RADHAApp:
         if pkt.get("warn") == "SONAR_STALE":
             self._log("⚠ SONAR STALE — altitude hold unreliable", WARN)
         armed = pkt.get("armed", False)
-        self._armed = armed
+        with self._state_lock:
+            self._armed = armed
         self._arm_lbl.config(text="ARMED" if armed else "DISARMED",
                               fg=SUCCESS if armed else DANGER)
         self._mode_lbl.config(text=f"MODE: {pkt.get('mode','---')}")

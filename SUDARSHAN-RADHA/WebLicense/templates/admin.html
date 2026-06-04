@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Admin — SUDARSHAN Licensing{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-title">Admin Panel — Candidate Records</div>
+
+  <div class="stat-strip">
+    <div class="stat-box">
+      <div class="stat-val">{{ total_attempts }}</div>
+      <div class="stat-lbl">Total Attempts</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-val" style="color:var(--pass);">{{ total_passed }}</div>
+      <div class="stat-lbl">Passed</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-val" style="color:var(--fail);">{{ total_attempts - total_passed }}</div>
+      <div class="stat-lbl">Failed</div>
+    </div>
+    {% if total_attempts > 0 %}
+    <div class="stat-box">
+      <div class="stat-val">{{ ((total_passed / total_attempts) * 100) | int }}%</div>
+      <div class="stat-lbl">Pass Rate</div>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if attempts %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Score</th>
+          <th>Result</th>
+          <th>Date (UTC)</th>
+          <th>License #</th>
+          <th>Username</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in attempts %}
+        <tr>
+          <td>{{ a['id'] }}</td>
+          <td>{{ a['name'] }}</td>
+          <td style="color:var(--dim); font-size:0.8rem;">{{ a['email'] }}</td>
+          <td>{{ a['score'] }}/{{ a['total'] }}</td>
+          <td>
+            {% if a['passed'] %}
+            <span class="badge-pass">PASS</span>
+            {% else %}
+            <span class="badge-fail">FAIL</span>
+            {% endif %}
+          </td>
+          <td style="color:var(--dim); font-size:0.78rem;">
+            {{ a['taken_at'][:16] if a['taken_at'] else '—' }}
+          </td>
+          <td style="font-size:0.78rem; color:var(--cyan);">
+            {{ a['license_number'] or '—' }}
+          </td>
+          <td>{{ a['username'] or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p style="color:var(--dim); text-align:center; padding:20px 0;">
+    No examination attempts recorded yet.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

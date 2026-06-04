@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Create GCS Account — SUDARSHAN UAV{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-title">Create GCS Login Credentials</div>
+
+  <p style="color:var(--dim); font-size:0.9rem; line-height:1.6; margin-bottom:18px;">
+    Well done, <strong style="color:var(--text);">{{ attempt['name'] }}</strong>.
+    Choose a username and password for the SUDARSHAN RADHA Ground Control Station.
+    These credentials will be written to the GCS authentication file and can be
+    used to log into the Python GCS immediately.
+  </p>
+
+  {% if errors %}
+  {% for err in errors %}
+  <div class="alert alert-error">{{ err }}</div>
+  {% endfor %}
+  {% endif %}
+
+  <form method="post" action="/signup">
+    <input type="hidden" name="attempt_id" value="{{ attempt['id'] }}">
+
+    <label>
+      GCS Username &nbsp;<span style="color:var(--dim); font-size:0.78rem;">(min. 3 characters, no spaces)</span>
+      <input type="text" name="username" required minlength="3"
+             pattern="[A-Za-z0-9_\-]+" title="Letters, numbers, _ and - only"
+             placeholder="e.g. pilot_arjun"
+             autocomplete="username">
+    </label>
+
+    <label>
+      Password &nbsp;<span style="color:var(--dim); font-size:0.78rem;">(min. 6 characters)</span>
+      <input type="password" name="password" required minlength="6"
+             placeholder="Choose a strong password"
+             autocomplete="new-password">
+    </label>
+
+    <label>
+      Confirm Password
+      <input type="password" name="password2" required minlength="6"
+             placeholder="Repeat password"
+             autocomplete="new-password">
+    </label>
+
+    <div style="margin-top:10px;">
+      <button class="btn btn-gold" type="submit">
+        Issue License &amp; Activate Account
+      </button>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="font-size:0.82rem; color:var(--dim);">
+  <strong style="color:var(--text);">What happens next</strong>
+  <ul style="padding-left:18px; margin-top:8px; line-height:1.9;">
+    <li>Your credentials are stored in the GCS <code>auth.json</code> file (SHA-256 hashed password).</li>
+    <li>A signed PDF Operator License is generated and available for download.</li>
+    <li>The license is valid for one (1) year from today.</li>
+    <li>The username and credentials are bound to this examination result and are non-transferable.</li>
+  </ul>
+</div>
+{% endblock %}

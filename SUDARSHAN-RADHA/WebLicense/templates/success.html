@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}License Issued — SUDARSHAN UAV{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-title" style="color:var(--gold);">Operator License Issued</div>
+
+  <div class="check-icon">&#10003;</div>
+  <p style="text-align:center; margin-bottom:22px; font-size:0.95rem;">
+    Your Elysium Aerotech Operator License has been generated successfully.
+  </p>
+
+  <table class="lic-table">
+    <tr>
+      <th>License Number</th>
+      <td style="color:var(--cyan); font-weight:bold;">{{ data['license_number'] }}</td>
+    </tr>
+    <tr>
+      <th>Issued To</th>
+      <td>{{ data['name'] }}</td>
+    </tr>
+    <tr>
+      <th>Email</th>
+      <td>{{ data['email'] }}</td>
+    </tr>
+    <tr>
+      <th>GCS Username</th>
+      <td style="color:var(--gold);">{{ data['username'] }}</td>
+    </tr>
+    <tr>
+      <th>Valid Until</th>
+      <td>{{ data['valid_until'] }}</td>
+    </tr>
+    <tr>
+      <th>Issued By</th>
+      <td>Elysium Aerotech — Prerit Roshan, Project Director</td>
+    </tr>
+  </table>
+
+  <div class="alert alert-info">
+    Your GCS credentials have been saved. Log into the RADHA GCS with username
+    <strong>{{ data['username'] }}</strong> and your chosen password.
+  </div>
+
+  <div style="text-align:center; margin-top:6px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+    <a href="/license/{{ data['id'] }}.pdf" class="btn btn-gold">
+      &#11015; Download Operator License PDF
+    </a>
+    <a href="/" class="btn btn-outline">Return to Home</a>
+  </div>
+</div>
+{% endblock %}
